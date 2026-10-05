@@ -21,4 +21,9 @@ else()
             INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/3rdparty/zlib/zlib;${CMAKE_BINARY_DIR}/3rdparty/zlib/zlib")
     endif()
     set(ZLIB_FOUND TRUE)
+    # What CMake's FindZLIB also sets: libpng's generated pnglibconf.c is
+    # preprocessed with ZLIB_INCLUDE_DIRS, and fails without zlib.h (found
+    # building for the PS5, whose sysroot has no zlib)
+    set(ZLIB_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/3rdparty/zlib/zlib;${CMAKE_BINARY_DIR}/3rdparty/zlib/zlib")
+    set(ZLIB_LIBRARIES ZLIB::ZLIB)
 endif()

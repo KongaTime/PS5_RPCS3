@@ -8,6 +8,12 @@ set(BUNDLE_SPEEX TRUE CACHE BOOL "Bundle the speex library")
 set(LAZY_LOAD_LIBS TRUE CACHE BOOL "Lazily load shared libraries")
 set(USE_SANITIZERS FALSE CACHE BOOL "Dont't use sanitizers")
 
+if(PS5)
+	# PS5: the sysroot carries OSS's header, but the console has no OSS device;
+	# its audio output comes from the title
+	set(HAVE_SYS_SOUNDCARD_H FALSE CACHE BOOL "" FORCE)
+endif()
+
 add_subdirectory(cubeb EXCLUDE_FROM_ALL)
 add_library(3rdparty::cubeb ALIAS cubeb)
 
