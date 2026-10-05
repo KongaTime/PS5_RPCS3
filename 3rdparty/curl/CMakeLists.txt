@@ -25,6 +25,11 @@ else()
 	set(CURL_USE_LIBPSL OFF CACHE INTERNAL "")
 	set(BUILD_TESTING OFF CACHE INTERNAL "")
 	set(BUILD_EXAMPLES OFF CACHE INTERNAL "")
+	if(PS5)
+		# PS5: the SDK's stubs let the configure check link pipe2, but no module a
+		# title loads exports it: curl's pipe() path instead
+		set(HAVE_PIPE2 0 CACHE INTERNAL "")
+	endif()
 
 	add_subdirectory(curl EXCLUDE_FROM_ALL)
 

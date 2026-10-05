@@ -1,11 +1,15 @@
 #include "stdafx.h"
 #include "pad_thread.h"
 #include "product_info.h"
+#ifdef __PROSPERO__
+#include "ps5/ps5_pad_handler.h" // PS5: the console's controllers; no HID
+#else
 #include "ds3_pad_handler.h"
 #include "ds4_pad_handler.h"
 #include "dualsense_pad_handler.h"
 #include "skateboard_pad_handler.h"
 #include "ps_move_handler.h"
+#endif
 #ifdef _WIN32
 #include "xinput_pad_handler.h"
 #include "mm_joystick_handler.h"
@@ -15,7 +19,7 @@
 #ifdef HAVE_SDL3
 #include "sdl_pad_handler.h"
 #endif
-#ifndef ANDROID
+#if !defined(ANDROID) && !defined(__PROSPERO__) // PS5: no keyboard handler (Qt)
 #include "keyboard_pad_handler.h"
 #endif
 #include "Emu/Io/Null/NullPadHandler.h"
@@ -81,8 +85,10 @@ void pad_thread::Init()
 {
 	std::lock_guard lock(pad::g_pad_mutex);
 
+#ifndef __PROSPERO__ // PS5: no mouse (the gyro emulation reads Qt's mouse events)
 	// Reset mouse-based gyro state
 	m_mouse_gyro.set_enabled(g_cfg.io.mouse_based_gyro_enabled.get());
+#endif
 
 	// Cache old settings if possible
 	std::array<pad_setting, CELL_PAD_MAX_PORT_NUM> pad_settings;
@@ -154,7 +160,7 @@ void pad_thread::Init()
 
 	input_log.trace("Using pad config:\n%s", g_cfg_input);
 
-#ifndef ANDROID
+#if !defined(ANDROID) && !defined(__PROSPERO__) // PS5: no keyboard handler (Qt)
 	std::shared_ptr<keyboard_pad_handler> keyptr;
 #endif
 
@@ -167,7 +173,12 @@ void pad_thread::Init()
 		cfg_player* cfg = g_cfg_input.player[i];
 		std::shared_ptr<PadHandlerBase> cur_pad_handler;
 
+#ifdef __PROSPERO__
+		// PS5: players 1 to 4 are the console's controllers, whatever the configuration names
+		const pad_handler handler_type = pad_settings[i].is_ldd_pad || i >= static_cast<u32>(rpcs3_ps5_pad_players) ? pad_handler::null : pad_handler::dualsense;
+#else
 		const pad_handler handler_type = pad_settings[i].is_ldd_pad ? pad_handler::null : cfg->handler.get();
+#endif
 
 		if (m_handlers.contains(handler_type))
 		{
@@ -177,7 +188,7 @@ void pad_thread::Init()
 		{
 			if (handler_type == pad_handler::keyboard)
 			{
-#ifndef ANDROID
+#if !defined(ANDROID) && !defined(__PROSPERO__) // PS5: no keyboard handler (Qt)
 				keyptr = std::make_shared<keyboard_pad_handler>();
 				keyptr->moveToThread(static_cast<QThread*>(m_curthread));
 				keyptr->SetTargetWindow(static_cast<QWindow*>(m_curwindow));
@@ -610,9 +621,11 @@ void pad_thread::operator()()
 		{
 			update_pad_states();
 
+#ifndef __PROSPERO__ // PS5: no mouse
 			// Apply mouse-based gyro emulation.
 			// Intentionally bound to Player 1 only.
 			m_mouse_gyro.apply_gyro(m_pads[0]);
+#endif
 		}
 
 		m_info.now_connect = connected_devices + num_ldd_pad;
@@ -852,6 +865,17 @@ void pad_thread::UnregisterLddPad(u32 handle)
 
 std::shared_ptr<PadHandlerBase> pad_thread::GetHandler(pad_handler type)
 {
+#ifdef __PROSPERO__
+	// PS5: every controller type is the console's controller (ps5/ps5_pad_handler)
+	switch (type)
+	{
+	case pad_handler::null:
+	case pad_handler::keyboard:
+		return std::make_shared<NullPadHandler>();
+	default:
+		return std::make_shared<ps5_pad_handler>();
+	}
+#else
 	switch (type)
 	{
 	case pad_handler::null:
@@ -887,6 +911,7 @@ std::shared_ptr<PadHandlerBase> pad_thread::GetHandler(pad_handler type)
 		return std::make_shared<evdev_joystick_handler>();
 #endif
 	}
+#endif
 
 	return nullptr;
 }

@@ -9,6 +9,8 @@
 #include "stdafx.h"
 #include "ps5_frontend.h"
 #include "ps5_gs_frame.h"
+#include "ps5_pad_handler.h"
+#include "Input/pad_thread.h"
 
 #include "util/logs.hpp"
 #include "util/sysinfo.hpp"
@@ -19,6 +21,7 @@
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
 #include "Emu/IdManager.h"
+#include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
 #include "Emu/Io/MouseHandler.h"
 #include "Emu/Io/Null/NullKeyboardHandler.h"
@@ -42,6 +45,7 @@
 #include <cstdlib>
 #include <deque>
 #include <mutex>
+#include <thread>
 
 LOG_CHANNEL(sys_log, "SYS");
 LOG_CHANNEL(ps5_log, "PS5");
@@ -92,6 +96,25 @@ namespace
 				quit = true;
 			}
 			cv.notify_one();
+		}
+
+		// Runs the calls waiting now, without waiting for more
+		void run_pending()
+		{
+			std::unique_lock lock(mutex);
+			while (!calls.empty())
+			{
+				auto [func, wake_up] = std::move(calls.front());
+				calls.pop_front();
+				lock.unlock();
+				func();
+				if (wake_up)
+				{
+					*wake_up = true;
+					wake_up->notify_one();
+				}
+				lock.lock();
+			}
 		}
 
 		// Runs the calls as they come, until quit is asked for
@@ -164,8 +187,8 @@ namespace
 		};
 		g_emu_callbacks.init_pad_handler = [](std::string_view title_id)
 		{
-			// The console's pad handler is the next step (Input/pad_thread)
-			ps5_log.warning("No pads yet (%s)", title_id);
+			// pad_thread gives players 1 to 4 the console's controllers (ps5_pad_handler)
+			ensure(g_fxo->init<named_thread<pad_thread>>(nullptr, nullptr, title_id));
 		};
 
 		g_emu_callbacks.get_audio = []() -> std::shared_ptr<AudioBackend>
@@ -251,8 +274,47 @@ namespace
 	}
 }
 
-int rpcs3_ps5_run(const char* boot_path)
+// What the Qt frontend defines for the emulator, without Qt
+
+// The input configurations (rpcs3qt/pad_settings_dialog.cpp on the desktop)
+cfg_input_configurations g_cfg_input_configs;
+
+// The desktop's --input-config option (rpcs3.cpp): none on the console
+std::string g_input_config_override;
+
+// Repeats an operation until it succeeds, keeping the main thread's calls
+// running in between when it is the main thread that waits
+void qt_events_aware_op(int repeat_duration_ms, std::function<bool()> wrapped_op)
 {
+	while (!wrapped_op())
+	{
+		if (thread_ctrl::is_main())
+		{
+			g_main.run_pending();
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(std::max(repeat_duration_ms, 1)));
+	}
+}
+
+// The title's: asks the shell to close it, and never returns (ps5_frontend.h)
+extern "C" void catchReturnFromMain(int status);
+
+// A fatal error ends the title through the shell: a title never calls exit
+[[noreturn]] void report_fatal_error(std::string_view text, bool /*is_html*/, bool /*include_help_text*/)
+{
+	std::fprintf(stderr, "RPCS3: fatal error: %.*s\n", static_cast<int>(text.size()), text.data());
+	logs::listener::sync_all();
+	catchReturnFromMain(1);
+	for (;;)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+	}
+}
+
+int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
+{
+	ps5_pad_handler::set_source(title.poll_pads);
+
 	// RPCS3's configuration, caches, dev_hdd0 and log go to /app0/rpcs3/ (fs::get_config_dir
 	// and fs::get_cache_dir read these before anything touches the filesystem)
 	::setenv("XDG_CONFIG_HOME", "/app0", 1);
