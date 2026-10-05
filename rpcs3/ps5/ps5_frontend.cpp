@@ -450,6 +450,11 @@ int run(const char* boot_path)
 	Emu.SetSupportedRenderers({video_renderer::null, video_renderer::vulkan});
 	Emu.SetDefaultRenderer(video_renderer::vulkan);
 
+	// Emulator::Init insists on an adapter name with Vulkan the default (ddc00ec
+	// stopped there on my console). VKGSRender takes the device of that name, or
+	// the first when none matches: the console has one, RADV's
+	Emu.SetDefaultGraphicsAdapter("PS5 GPU (RADV)");
+
 	trace("frontend: Emu.Init");
 	Emu.Init();
 	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p, executable range at %p", vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr);
