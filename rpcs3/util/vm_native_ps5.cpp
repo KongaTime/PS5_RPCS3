@@ -189,11 +189,13 @@ namespace utils
 			u32 current = 0;
 			u64 next = at + ps5_page_size;
 
-			if (sceKernelQueryMemoryProtection(reinterpret_cast<void*>(at), &start, &stop, &current) == 0 &&
-				reinterpret_cast<u64>(start) <= at && reinterpret_cast<u64>(stop) > at)
+			const s32 queried = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(at), &start, &stop, &current);
+			s32 changed = 0x7fffffff;
+			if (queried == 0 && reinterpret_cast<u64>(start) <= at && reinterpret_cast<u64>(stop) > at)
 			{
 				next = std::min<u64>(end, reinterpret_cast<u64>(stop));
-				if (sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(prot)) == 0)
+				changed = sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(prot));
+				if (changed == 0)
 				{
 					at = next;
 					continue;
@@ -202,10 +204,15 @@ namespace utils
 
 			if (!is_reserved(at))
 			{
-				fmt::throw_exception("memory_protect(%p, 0x%x, %d): 0x%x is neither mapped nor reserved", pointer, size, static_cast<int>(prot), at);
+				fmt::throw_exception("memory_protect(%p, 0x%x, %d): 0x%x is neither mapped nor reserved (query 0x%x: %p-%p prot 0x%x; mprotect 0x%x)",
+					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), start, stop, current, static_cast<u32>(changed));
 			}
 
-			memory_commit(reinterpret_cast<void*>(at), next - at, prot);
+			if (const int result = ps5_vrange_commit(reinterpret_cast<void*>(at), next - at, ps5_protection(prot)); result != 0)
+			{
+				fmt::throw_exception("memory_protect(%p, 0x%x, %d) at 0x%x: query 0x%x (%p-%p prot 0x%x), mprotect 0x%x, then commit 0x%x",
+					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), start, stop, current, static_cast<u32>(changed), static_cast<u32>(result));
+			}
 			at = next;
 		}
 	}
