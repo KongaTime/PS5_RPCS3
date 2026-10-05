@@ -21,6 +21,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
+#include "Emu/vfs_config.h"
 #include "Emu/IdManager.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
@@ -76,13 +77,25 @@ namespace
 	{
 		void log(u64 /*stamp*/, const logs::message& msg, std::string_view prefix, std::string_view text) override
 		{
-			if (msg > logs::level::warning)
+			// And everything this frontend's own channel says (the frame rate...)
+			if (msg > logs::level::warning && std::string_view(msg->name) != "PS5")
 			{
 				return;
 			}
 			std::fprintf(stderr, "%.*s%s: %.*s\n", static_cast<int>(prefix.size()), prefix.data(),
 				msg->name, static_cast<int>(text.size()), text.data());
-			trace("%s%s: %s", prefix, msg->name, text);
+
+			// A running game can log thousands a second: the trace keeps the first
+			// ones (RPCS3.log has them all), so it never slows the emulation
+			static atomic_t<u32> s_traced = 0;
+			if (const u32 n = s_traced++; n < 2000)
+			{
+				trace("%s%s: %s", prefix, msg->name, text);
+			}
+			else if (n == 2000)
+			{
+				trace("(the trace stops RPCS3's messages here: the rest is in /app0/rpcs3/cache/RPCS3.log)");
+			}
 		}
 	};
 
@@ -410,18 +423,43 @@ int run(const char* boot_path)
 	const std::string firmware = utils::get_firmware_version();
 	sys_log.always()("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
 	trace("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
+
+	// No LLVM in this build yet: the PPU and SPU interpreters, saved in the global
+	// configuration (config.yml), which a boot reads
+	if (g_cfg.core.ppu_decoder != ppu_decoder_type::_static || g_cfg.core.spu_decoder != spu_decoder_type::_static)
+	{
+		g_cfg.core.ppu_decoder.set(ppu_decoder_type::_static);
+		g_cfg.core.spu_decoder.set(spu_decoder_type::_static);
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+		trace("config: PPU and SPU interpreters (no LLVM in this build)");
+	}
+
+	// Nothing named to boot: the PS3's own home menu, as the desktop's Boot VSH
+	std::string vsh_path;
+	if ((!boot_path || !*boot_path) && !firmware.empty())
+	{
+		vsh_path = g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self";
+		if (fs::is_file(vsh_path))
+		{
+			boot_path = vsh_path.c_str();
+			trace("frontend: booting the PS3 home menu, %s", vsh_path);
+		}
+	}
 	rpcs3::utils::configure_logs(true);
 
 	int status = 0;
 	if (boot_path && *boot_path)
 	{
+		trace("frontend: Emu.BootGame %s", boot_path);
 		if (const game_boot_result result = Emu.BootGame(boot_path, "", true); result != game_boot_result::no_errors)
 		{
 			sys_log.error("Booting %s failed: %s", boot_path, result);
+			trace("frontend: booting failed: %s", result);
 			status = 1;
 		}
 		else
 		{
+			trace("frontend: booted; running until the emulation stops");
 			// Until the game stops and RPCS3 asks to quit
 			g_emu_callbacks.on_stop = []() { g_main.request_quit(); };
 			g_main.run();
