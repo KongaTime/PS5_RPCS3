@@ -2651,6 +2651,9 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 		const auto& mc = context->uc_mcontext;
 		fmt::append(msg, "signal_handler at %p; rsp %p, rbp %p\n", reinterpret_cast<void*>(&signal_handler),
 			reinterpret_cast<void*>(mc.mc_rsp), reinterpret_cast<void*>(mc.mc_rbp));
+		// A call through NULL faults before any frame: its return address is the
+		// word at the top of the stack
+		fmt::append(msg, "top of stack %p\n", *reinterpret_cast<void* const*>(mc.mc_rsp));
 		fmt::append(msg, "rdi %p, rsi %p, rax %p, rbx %p\n", reinterpret_cast<void*>(mc.mc_rdi), reinterpret_cast<void*>(mc.mc_rsi),
 			reinterpret_cast<void*>(mc.mc_rax), reinterpret_cast<void*>(mc.mc_rbx));
 		struct ps5_heap_stats heap{};

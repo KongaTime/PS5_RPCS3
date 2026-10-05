@@ -172,6 +172,16 @@ namespace vk
 		allocatorInfo.instance = inst;
 		allocatorInfo.vulkanApiVersion = VK_API_VERSION_1_2;
 
+#ifdef VK_NO_PROTOTYPES
+		// PS5: Vulkan through volk (no prototypes), so VMA fetches its functions
+		// itself and needs the two loaders; without them it called through NULL
+		// in VmaAllocator_T's constructor on my console (PS5_RPCS3 358f7ef)
+		VmaVulkanFunctions vulkan_functions = {};
+		vulkan_functions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+		vulkan_functions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+		allocatorInfo.pVulkanFunctions = &vulkan_functions;
+#endif
+
 		std::vector<VkDeviceSize> heap_limits;
 		const auto vram_allocation_limit = g_cfg.video.vk.vram_allocation_limit * 0x100000ull;
 		if (vram_allocation_limit < dev.get_memory_mapping().device_local_total_bytes)
