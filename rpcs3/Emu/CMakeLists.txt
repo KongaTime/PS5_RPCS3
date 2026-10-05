@@ -585,7 +585,7 @@ target_sources(rpcs3_emu PRIVATE
     RSX/Utils/rsx_utils.cpp
 )
 
-if(NOT ANDROID AND NOT APPLE)
+if(NOT ANDROID AND NOT APPLE AND NOT PS5) # PS5: no OpenGL renderer
     target_sources(rpcs3_emu PRIVATE
         RSX/GL/GLCommonDecompiler.cpp
         RSX/GL/GLCompute.cpp

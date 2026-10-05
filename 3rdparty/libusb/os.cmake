@@ -90,6 +90,14 @@ elseif (UNIX)
 		if(NOT ANDROID)
 			list(APPEND LIBUSB_LIBRARIES rt)
 		endif()
+	elseif(PS5)
+		# PS5: a title has no USB access, so libusb's null backend, which reports
+		# no devices (no USB passthrough)
+		set(PLATFORM_SRC
+			null_usb.c
+			threads_posix.c
+			events_posix.c
+		)
 	endif()
 endif()
 

@@ -51,7 +51,8 @@ else()
 endif()
 
 # libusb
-if(CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD")
+# PS5: no system libusb; the submodule, with its null backend (libusb/os.cmake)
+if(CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD" AND NOT PS5)
 	pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0>=1.0 )
 	cmake_dependent_option(USE_SYSTEM_LIBUSB "Use system libusb-1.0 as shared library" ON
 			"LIBUSB_FOUND" OFF)
@@ -60,7 +61,7 @@ else()
 	cmake_dependent_option(USE_SYSTEM_LIBUSB "Use system libusb-1.0 as shared library" OFF
 			"LIBUSB_FOUND" OFF)
 endif()
-if(CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD")
+if(CMAKE_SYSTEM_NAME MATCHES "DragonFly|FreeBSD" AND NOT PS5)
 	# Always use system libusb as reference implementation isn't supported
 	add_library(usb-1.0-shared INTERFACE)
 	target_link_libraries(usb-1.0-shared INTERFACE PkgConfig::LIBUSB)
@@ -97,7 +98,8 @@ add_subdirectory(yaml-cpp)
 
 # OpenGL
 
-if (NOT ANDROID AND NOT APPLE)
+# PS5: no OpenGL; RPCS3 draws with Vulkan (RADV) only, as on Android and macOS
+if (NOT ANDROID AND NOT APPLE AND NOT PS5)
 	find_package(OpenGL REQUIRED OPTIONAL_COMPONENTS EGL)
 
 	add_library(3rdparty_opengl INTERFACE)
@@ -282,7 +284,22 @@ if(NOT ANDROID)
 	add_library(3rdparty_ffmpeg INTERFACE)
 
 	# Select the version of ffmpeg to use, default is builtin
-	if(USE_SYSTEM_FFMPEG)
+	if(PS5)
+		# PS5: ffmpeg-core's release and components, built for the console by the
+		# title that builds this fork (PS5_RPCS3Title's rpcs3/build-ffmpeg.sh)
+		if(NOT PS5_FFMPEG_DIR)
+			message(FATAL_ERROR "PS5: set PS5_FFMPEG_DIR to the console's FFmpeg (lib/, include/)")
+		endif()
+		message(STATUS "RPCS3: using the PS5's ffmpeg in ${PS5_FFMPEG_DIR}")
+		foreach(lib avformat avcodec avutil swscale swresample)
+			find_library(FFMPEG_LIB_${lib} ${lib} PATHS ${PS5_FFMPEG_DIR}/lib NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+			if(NOT FFMPEG_LIB_${lib})
+				message(FATAL_ERROR "PS5: lib${lib}.a is not in ${PS5_FFMPEG_DIR}/lib")
+			endif()
+			target_link_libraries(3rdparty_ffmpeg INTERFACE ${FFMPEG_LIB_${lib}})
+		endforeach()
+		target_include_directories(3rdparty_ffmpeg SYSTEM INTERFACE ${PS5_FFMPEG_DIR}/include)
+	elseif(USE_SYSTEM_FFMPEG)
 		message(STATUS "RPCS3: using shared ffmpeg")
 		find_package(FFMPEG REQUIRED)
 
@@ -323,7 +340,7 @@ endif()
 
 # GLEW
 add_library(3rdparty_glew INTERFACE)
-if(NOT MSVC AND NOT ANDROID AND NOT APPLE)
+if(NOT MSVC AND NOT ANDROID AND NOT APPLE AND NOT PS5)
 	find_package(GLEW REQUIRED)
 	target_link_libraries(3rdparty_glew INTERFACE GLEW::GLEW)
 endif()

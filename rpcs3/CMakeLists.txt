@@ -23,7 +23,8 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
     endif()
 endif()
 
-if (NOT ANDROID)
+# PS5: as on Android, only the emulator core; the frontend is the PS5 title's
+if (NOT ANDROID AND NOT PS5)
     # Qt
     # finds Qt libraries and setups custom commands for MOC and UIC
     # Must be done here because generated MOC and UIC targets cant
@@ -34,13 +35,13 @@ endif()
 # subdirectories
 add_subdirectory(Emu)
 
-if (NOT ANDROID)
+if (NOT ANDROID AND NOT PS5)
     add_subdirectory(rpcs3qt)
 endif()
 
 gen_git_version(${CMAKE_CURRENT_SOURCE_DIR})
 
-if (NOT ANDROID)
+if (NOT ANDROID AND NOT PS5)
     # Build rpcs3_lib
     add_library(rpcs3_lib STATIC)
 

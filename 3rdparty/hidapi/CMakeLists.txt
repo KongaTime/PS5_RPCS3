@@ -1,5 +1,10 @@
 # hidapi
-if(USE_SYSTEM_HIDAPI)
+if(PS5)
+	# PS5: the pads come from the console's own pad API, not HID; only the header,
+	# for the desktop pad handlers that include it
+	add_library(3rdparty_hidapi INTERFACE)
+	target_include_directories(3rdparty_hidapi SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/hidapi/hidapi)
+elseif(USE_SYSTEM_HIDAPI)
 	message(STATUS "RPCS3: using shared hidapi")
 	pkg_check_modules(hidapi-hidraw REQUIRED IMPORTED_TARGET hidapi-hidraw)
 	add_library(3rdparty_hidapi INTERFACE)
