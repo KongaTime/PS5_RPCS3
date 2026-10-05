@@ -24,6 +24,8 @@
 #include "Emu/vfs_config.h"
 #include "Emu/IdManager.h"
 #include "Emu/Memory/vm.h"
+#include "Emu/Cell/PPUThread.h"
+#include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
 #include "Emu/Io/MouseHandler.h"
@@ -475,6 +477,17 @@ int run(const char* boot_path)
 		trace("config: PPU and SPU interpreters (no LLVM in this build)");
 	}
 
+	// The renderer draws through VK_KHR_display (ps5_gs_frame); the configuration
+	// the first runs saved chose Null, which drew nothing. And no GDB server:
+	// nothing on the console attaches to it, and its socket failed to bind
+	if (g_cfg.video.renderer != video_renderer::vulkan || !g_cfg.misc.gdb_server.to_string().empty())
+	{
+		g_cfg.video.renderer.set(video_renderer::vulkan);
+		g_cfg.misc.gdb_server.from_string("");
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+		trace("config: Vulkan renderer, no GDB server");
+	}
+
 	// Nothing named to boot: the PS3's own home menu, as the desktop's Boot VSH
 	std::string vsh_path;
 	if ((!boot_path || !*boot_path) && !firmware.empty())
@@ -501,6 +514,31 @@ int run(const char* boot_path)
 		else
 		{
 			trace("frontend: booted; running until the emulation stops");
+
+			// Every five seconds, in the trace: the emulation's state, the frames
+			// RSX flipped, and where the PPU threads are, to tell a stall from slow
+			named_thread status("PS5 Status", []()
+			{
+				for (u32 seconds = 0; thread_ctrl::state() != thread_state::aborting; seconds++)
+				{
+					thread_ctrl::wait_for(1'000'000);
+					if (seconds % 5 != 4 || Emu.IsStopped())
+					{
+						continue;
+					}
+					const auto render = rsx::get_current_renderer();
+					std::string ppus;
+					const u32 count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
+					{
+						if (ppus.size() < 600)
+						{
+							fmt::append(ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
+						}
+					});
+					trace("status %ds: state %d, RSX flips %d, %d PPU threads:%s", seconds + 1, static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, count, ppus);
+				}
+			});
+
 			// Until the game stops and RPCS3 asks to quit
 			g_emu_callbacks.on_stop = []() { g_main.request_quit(); };
 			g_main.run();
