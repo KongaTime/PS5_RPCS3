@@ -52,6 +52,18 @@ LOG_CHANNEL(ps5_log, "PS5");
 
 namespace
 {
+	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
+	void (*g_trace)(const char* line) = nullptr;
+
+	template <usz N, typename... Args>
+	void trace(const char (&format)[N], const Args&... args)
+	{
+		if (g_trace)
+		{
+			g_trace(fmt::format(format, args...).c_str());
+		}
+	}
+
 	// The console's display, as swapchain_ps5.hpp chooses it
 	constexpr int display_width = 3840;
 	constexpr int display_height = 2160;
@@ -69,6 +81,7 @@ namespace
 			}
 			std::fprintf(stderr, "%.*s%s: %.*s\n", static_cast<int>(prefix.size()), prefix.data(),
 				msg->name, static_cast<int>(text.size()), text.data());
+			trace("%s%s: %s", prefix, msg->name, text);
 		}
 	};
 
@@ -303,6 +316,17 @@ extern "C" void catchReturnFromMain(int status);
 [[noreturn]] void report_fatal_error(std::string_view text, bool /*is_html*/, bool /*include_help_text*/)
 {
 	std::fprintf(stderr, "RPCS3: fatal error: %.*s\n", static_cast<int>(text.size()), text.data());
+	trace("fatal error: %s", text);
+	if (!g_trace)
+	{
+		// Before the title's main (RPCS3's static initialisers reserve the guest
+		// memory): straight to the title's trace file, which nothing has opened yet
+		if (FILE* file = std::fopen("/app0/rpcs3-trace.txt", "a"))
+		{
+			std::fprintf(file, "before main: fatal error: %.*s\n", static_cast<int>(text.size()), text.data());
+			std::fclose(file);
+		}
+	}
 	logs::listener::sync_all();
 	catchReturnFromMain(1);
 	for (;;)
@@ -311,9 +335,26 @@ extern "C" void catchReturnFromMain(int status);
 	}
 }
 
+namespace
+{
+	int run(const char* boot_path);
+}
+
 int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 {
+	g_trace = title.trace;
 	ps5_pad_handler::set_source(title.poll_pads);
+
+	// RPCS3 is built without exceptions: its fatal errors (fmt::throw_exception)
+	// end in report_fatal_error, which records them and ends the title
+	return run(boot_path);
+}
+
+namespace
+{
+int run(const char* boot_path)
+{
+	trace("frontend: start");
 
 	// RPCS3's configuration, caches, dev_hdd0 and log go to /app0/rpcs3/ (fs::get_config_dir
 	// and fs::get_cache_dir read these before anything touches the filesystem)
@@ -323,11 +364,14 @@ int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 	if (!thread_ctrl::is_main())
 	{
 		std::fprintf(stderr, "rpcs3_ps5_run: not on the main thread\n");
+		trace("not on the main thread");
 		return 1;
 	}
 
 	// The thread pool's finalizer, on first use (as rpcs3.cpp)
+	trace("frontend: thread pool");
 	static_cast<void>(named_thread("", [](int) {}));
+	trace("frontend: config %s, cache %s", fs::get_config_dir(), fs::get_cache_dir());
 
 	// Listeners stay in RPCS3's list for the life of the process
 	static klog_listener klog;
@@ -339,15 +383,19 @@ int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 		logs::set_init({std::move(ver)});
 	}
 
+	trace("frontend: logs open");
 	create_callbacks();
 
 	Emu.SetHasGui(false);
 	Emu.SetHeadless(false);
 	Emu.SetUsr("00000001");
+	trace("frontend: Emu.Init");
 	Emu.Init();
+	trace("frontend: Emu.Init done");
 
 	const std::string firmware = utils::get_firmware_version();
 	sys_log.always()("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
+	trace("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
 	rpcs3::utils::configure_logs(true);
 
 	int status = 0;
@@ -371,7 +419,9 @@ int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 		Emu.Kill(false);
 	}
 
+	trace("frontend: stopping, status %d", status);
 	logs::listener::sync_all();
 	logs::listener::shutdown_all();
 	return status;
 }
+} // namespace

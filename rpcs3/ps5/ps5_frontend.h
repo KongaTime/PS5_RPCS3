@@ -48,6 +48,10 @@ struct rpcs3_ps5_title
 	// Reads every player's controller; called by RPCS3's pad thread, about
 	// once a millisecond, never by another thread
 	void (*poll_pads)(rpcs3_ps5_pad pads[rpcs3_ps5_pad_players]);
+
+	// Records one line where it survives a crash (the title's trace file), from
+	// any thread: each step of the start, and RPCS3's warnings and errors
+	void (*trace)(const char* line);
 };
 
 // boot_path: what to boot (an ELF, or a game's folder); empty to start the
