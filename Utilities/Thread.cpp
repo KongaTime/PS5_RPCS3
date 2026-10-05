@@ -93,6 +93,9 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 #endif
 
 #include "util/vm.hpp"
+#ifdef __PROSPERO__
+#include <ps5platform/heap.h>
+#endif
 #include "util/logs.hpp"
 #include "util/asm.hpp"
 #include "util/v128.hpp"
@@ -2630,6 +2633,36 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 	}
 
 	append_thread_name(msg);
+
+#ifdef __PROSPERO__
+	// PS5: no debugger to ask, so the call chain goes into the message: a walk
+	// of the frame pointers (the title is built with them), each frame checked
+	// to lie a little above the last on the stack. The title's image base is
+	// signal_handler's address less its link address (llvm-pie.elf)
+	{
+		const auto& mc = context->uc_mcontext;
+		fmt::append(msg, "signal_handler at %p; rsp %p, rbp %p\n", reinterpret_cast<void*>(&signal_handler),
+			reinterpret_cast<void*>(mc.mc_rsp), reinterpret_cast<void*>(mc.mc_rbp));
+		fmt::append(msg, "rdi %p, rsi %p, rax %p, rbx %p\n", reinterpret_cast<void*>(mc.mc_rdi), reinterpret_cast<void*>(mc.mc_rsi),
+			reinterpret_cast<void*>(mc.mc_rax), reinterpret_cast<void*>(mc.mc_rbx));
+		struct ps5_heap_stats heap{};
+		ps5_heap_stats(&heap);
+		fmt::append(msg, "title heap %p, 0x%x bytes\nBacktrace:", reinterpret_cast<void*>(heap.range_base), heap.range_bytes);
+		u64 frame = mc.mc_rbp;
+		const u64 low = mc.mc_rsp;
+		for (u32 i = 0; i < 40 && frame >= low && frame - low < 0x1000000 && frame % 8 == 0; i++)
+		{
+			const u64* const words = reinterpret_cast<const u64*>(frame);
+			fmt::append(msg, " %p", reinterpret_cast<void*>(words[1]));
+			if (words[0] <= frame)
+			{
+				break;
+			}
+			frame = words[0];
+		}
+		msg += "\n";
+	}
+#endif
 
 #ifdef __APPLE__
 	thread_local bool s_tls_is_attempting_recovery = false;
