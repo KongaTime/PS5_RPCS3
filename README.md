@@ -1,3 +1,23 @@
+## About this fork
+
+PS5_RPCS3 is my fork of [RPCS3](https://github.com/RPCS3/rpcs3) for my modded
+PlayStation 5 homebrew stack. RPCS3 is the project; its developers get the credit
+for the emulator. This fork only adds what the console needs to run it as a native
+homebrew title: a frontend without Qt, the console's memory, JIT and thread rules
+through my platform layer, the display, pad and audio. The changes are behind
+`__PROSPERO__` or in files of their own, so upstream merges stay clean.
+
+- **The title** that builds it is [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title)
+  (`PPSA99200`), made from PS5_VulkanTemplate. It pins this fork by revision.
+- **Keeping in step**: `main` is the only branch. I merge `upstream/master` into it
+  regularly and never rebase or force-push.
+- **Licence**: RPCS3 is GPL-2.0-only. The PS5 platform layer it links is
+  GPL-3.0-or-later, and the two cannot be combined in one distributed program. So
+  there are no binaries of this port: build it from source for your own console,
+  and don't share the builds.
+- **No piracy**: no games, firmware or keys are or will be provided. Install the
+  PS3 system software from Sony's own update file, and use dumps of games you own.
+
 RPCS3
 =====
 
