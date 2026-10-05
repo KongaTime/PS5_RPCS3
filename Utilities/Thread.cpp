@@ -95,6 +95,14 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 #include "util/vm.hpp"
 #ifdef __PROSPERO__
 #include <ps5platform/heap.h>
+#include <ps5platform/libc.h>
+
+// PS5: a thread's end runs its C++ thread_local destructors before libkernel's
+// key destructors, while its thread-local storage (emulated) is whole. Plain
+// pthread_exit ran them after emulated TLS had freed it: the PS3 home menu's
+// boot crashed in mspace_free from the platform's run_destructors, under
+// thread_base::finalize (PS5_RPCS3 0be3ada's backtrace)
+#define pthread_exit ps5_pthread_exit
 #endif
 #include "util/logs.hpp"
 #include "util/asm.hpp"
