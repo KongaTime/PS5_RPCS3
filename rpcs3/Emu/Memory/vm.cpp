@@ -2304,7 +2304,13 @@ namespace vm
 
 	inline namespace ps3_
 	{
+#ifndef __PROSPERO__
 		static utils::shm s_hook{0x800000000, ""};
+#else
+		// PS5: the hook range stays a reservation. Nothing reads or writes it, and a
+		// 32 GiB object is 32 GiB of the console's direct memory (no sparse
+		// copy-on-write file): it stopped the title before main
+#endif
 
 		void init()
 		{
@@ -2343,7 +2349,9 @@ namespace vm
 #ifdef _WIN32
 			utils::memory_release(g_hook_addr, 0x800000000);
 #endif
+#ifndef __PROSPERO__ // PS5: no hook object (s_hook)
 			ensure(s_hook.map(g_hook_addr, utils::protection::rw, true));
+#endif
 		}
 	}
 
@@ -2370,7 +2378,7 @@ namespace vm
 #ifdef _WIN32
 		s_hook.unmap(g_hook_addr);
 		ensure(utils::memory_reserve(0x800000000, g_hook_addr));
-#else
+#elif !defined(__PROSPERO__) // PS5: never committed (s_hook)
 		utils::memory_decommit(g_hook_addr, 0x800000000);
 #endif
 
