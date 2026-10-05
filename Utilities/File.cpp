@@ -2519,6 +2519,19 @@ const std::string& fs::get_config_dir([[maybe_unused]] bool get_config_subdirect
 {
 #ifdef ANDROID
 	return g_android_config_dir;
+#elif defined(__PROSPERO__)
+	// PS5: a title has no home and no working directory (the relative fallback
+	// below failed every path); RPCS3's files live in the title's own folder
+	static const std::string s_dir = []
+	{
+		const std::string dir = "/app0/rpcs3/";
+		if (!create_path(dir))
+		{
+			std::printf("Failed to create configuration directory '%s' (%d).\n", dir.c_str(), errno);
+		}
+		return dir;
+	}();
+	return s_dir;
 #else
 	// Use magic static
 	static const std::string s_dir = []
@@ -2617,6 +2630,18 @@ const std::string& fs::get_cache_dir()
 {
 #ifdef ANDROID
 	return g_android_cache_dir;
+#elif defined(__PROSPERO__)
+	// PS5: beside the configuration, in the title's folder (get_config_dir)
+	static const std::string s_dir = []
+	{
+		const std::string dir = get_config_dir() + "cache/";
+		if (!create_path(dir))
+		{
+			std::printf("Failed to create cache directory '%s' (%d).\n", dir.c_str(), errno);
+		}
+		return dir;
+	}();
+	return s_dir;
 #else
 	static const std::string s_dir = []
 	{

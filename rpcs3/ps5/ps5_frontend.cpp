@@ -356,10 +356,8 @@ int run(const char* boot_path)
 {
 	trace("frontend: start");
 
-	// RPCS3's configuration, caches, dev_hdd0 and log go to /app0/rpcs3/ (fs::get_config_dir
-	// and fs::get_cache_dir read these before anything touches the filesystem)
-	::setenv("XDG_CONFIG_HOME", "/app0", 1);
-	::setenv("XDG_CACHE_HOME", "/app0", 1);
+	// RPCS3's configuration, dev_hdd0 and log go to /app0/rpcs3/, its caches to
+	// /app0/rpcs3/cache/ (fs::get_config_dir and get_cache_dir on PS5)
 
 	if (!thread_ctrl::is_main())
 	{
