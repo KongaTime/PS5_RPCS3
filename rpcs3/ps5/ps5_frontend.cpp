@@ -44,6 +44,8 @@
 #include "util/video_source.h"
 
 #include <condition_variable>
+#include <csignal>
+#include <ucontext.h>
 #include <cstdio>
 #include <cstdlib>
 #include <deque>
@@ -78,27 +80,64 @@ namespace
 	{
 		void log(u64 /*stamp*/, const logs::message& msg, std::string_view prefix, std::string_view text) override
 		{
+			const bool notice = msg > logs::level::warning;
+
 			// And everything this frontend's own channel says (the frame rate...)
-			if (msg > logs::level::warning && std::string_view(msg->name) != "PS5")
+			if (!notice || std::string_view(msg->name) == "PS5")
+			{
+				std::fprintf(stderr, "%.*s%s: %.*s\n", static_cast<int>(prefix.size()), prefix.data(),
+					msg->name, static_cast<int>(text.size()), text.data());
+			}
+
+			if (msg > logs::level::notice)
 			{
 				return;
 			}
-			std::fprintf(stderr, "%.*s%s: %.*s\n", static_cast<int>(prefix.size()), prefix.data(),
-				msg->name, static_cast<int>(text.size()), text.data());
 
-			// A running game can log thousands a second: the trace keeps the first
-			// ones (RPCS3.log has them all), so it never slows the emulation
+			// The trace takes notices too, each cut to its first line: RPCS3.log is
+			// written behind, and a crash took its last lines (the PS3 home menu's
+			// boot, PS5_RPCS3 21ab5ee). A running game can log thousands a second:
+			// the trace keeps the first ones, so it never slows the emulation
+			if (notice)
+			{
+				text = text.substr(0, std::min<usz>(text.find('\n'), 200));
+			}
+
 			static atomic_t<u32> s_traced = 0;
-			if (const u32 n = s_traced++; n < 2000)
+			if (const u32 n = s_traced++; n < 6000)
 			{
 				trace("%s%s: %s", prefix, msg->name, text);
 			}
-			else if (n == 2000)
+			else if (n == 6000)
 			{
 				trace("(the trace stops RPCS3's messages here: the rest is in /app0/rpcs3/cache/RPCS3.log)");
 			}
 		}
 	};
+
+	// The signals RPCS3 does not handle itself end the title without a word: the
+	// trace records them first (in the handler, against the rules for one, as a
+	// last act), then the default action ends the process as before
+	void record_signal(int sig, siginfo_t* info, void* uct)
+	{
+		const auto* context = static_cast<const ucontext_t*>(uct);
+		trace("fatal signal %d (code %d) at address %p, rip %p, thread %s", sig, info->si_code, info->si_addr,
+			reinterpret_cast<void*>(context->uc_mcontext.mc_rip), thread_ctrl::get_name());
+		::signal(sig, SIG_DFL);
+		::raise(sig);
+	}
+
+	void record_signals()
+	{
+		struct ::sigaction sa{};
+		sa.sa_flags = SA_SIGINFO;
+		sigemptyset(&sa.sa_mask);
+		sa.sa_sigaction = record_signal;
+		for (const int sig : {SIGABRT, SIGFPE, SIGSYS, SIGTRAP, SIGXCPU})
+		{
+			::sigaction(sig, &sa, nullptr);
+		}
+	}
 
 	// The calls RPCS3 makes on the main thread
 	struct main_queue
@@ -370,6 +409,7 @@ namespace
 int run(const char* boot_path)
 {
 	trace("frontend: start");
+	record_signals();
 
 	// RPCS3's configuration, dev_hdd0 and log go to /app0/rpcs3/, its caches to
 	// /app0/rpcs3/cache/ (fs::get_config_dir and get_cache_dir on PS5)

@@ -2526,6 +2526,21 @@ static void signal_handler(int /*sig*/, siginfo_t* info, void* uct) noexcept
 {
 	ucontext_t* context = static_cast<ucontext_t*>(uct);
 
+#ifdef __PROSPERO__
+	// PS5: the handler runs with SA_NODEFER, so a fault inside it is reported
+	// here instead of the kernel ending the process without a word
+	thread_local u32 s_depth = 0;
+	struct depth_guard { ~depth_guard() { s_depth--; } } depth_guard_;
+	if (s_depth++)
+	{
+		sys_log.fatal("Segfault inside the segfault handler: location %p at %p", info->si_addr, reinterpret_cast<void*>(context->uc_mcontext.mc_rip));
+		logs::listener::sync_all();
+		::signal(SIGSEGV, SIG_DFL);
+		::signal(SIGBUS, SIG_DFL);
+		return;
+	}
+#endif
+
 #if defined(ARCH_X64)
 #ifdef __APPLE__
 	const u64 err = context->uc_mcontext->__es.__err;
@@ -2689,6 +2704,9 @@ const bool s_exception_handler_set = []() -> bool
 {
 	struct ::sigaction sa;
 	sa.sa_flags = SA_SIGINFO;
+#ifdef __PROSPERO__
+	sa.sa_flags |= SA_NODEFER;
+#endif
 	sigemptyset(&sa.sa_mask);
 	sa.sa_sigaction = signal_handler;
 
@@ -2698,7 +2716,8 @@ const bool s_exception_handler_set = []() -> bool
 		std::abort();
 	}
 
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__PROSPERO__)
+	// PS5: a FreeBSD kernel, which can report a protection fault as SIGBUS
 	if (::sigaction(SIGBUS, &sa, NULL) == -1)
 	{
 		std::fprintf(stderr, "sigaction(SIGBUS) failed (%d).\n", errno);
