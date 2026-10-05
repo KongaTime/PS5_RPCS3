@@ -48,6 +48,17 @@ if(HAS_MEMORY_BREAKPOINTS)
     target_compile_definitions(rpcs3_emu PRIVATE RPCS3_HAS_MEMORY_BREAKPOINTS)
 endif()
 
+if(PS5)
+    # PS5: no Vulkan loader. The title links RADV and reaches it through volk, as
+    # PS5_VulkanTemplate's foundation does: every unit sees volk's declarations
+    # first (VK_NO_PROTOTYPES), and the title's volk.c holds the commands
+    if(NOT PS5_VOLK_DIR)
+        message(FATAL_ERROR "PS5: set PS5_VOLK_DIR to the title's volk (volk.h)")
+    endif()
+    target_include_directories(rpcs3_emu PUBLIC ${PS5_VOLK_DIR})
+    target_compile_options(rpcs3_emu PRIVATE "SHELL:-include ${PS5_VOLK_DIR}/volk.h")
+endif()
+
 # For stdafx.h
 target_include_directories(rpcs3_emu
     PUBLIC

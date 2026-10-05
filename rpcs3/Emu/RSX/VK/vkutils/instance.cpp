@@ -235,6 +235,12 @@ namespace vk
 			return false;
 		}
 
+#ifdef __PROSPERO__
+		// PS5: the commands come through volk (rpcs3/Emu/CMakeLists.txt); load
+		// this instance's, the device's among them (one GPU)
+		volkLoadInstance(m_instance);
+#endif
+
 		return true;
 	}
 #ifdef __clang__

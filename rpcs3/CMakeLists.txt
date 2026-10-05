@@ -39,6 +39,10 @@ if (NOT ANDROID AND NOT PS5)
     add_subdirectory(rpcs3qt)
 endif()
 
+if(PS5)
+    add_subdirectory(ps5) # PS5: the console's frontend
+endif()
+
 gen_git_version(${CMAKE_CURRENT_SOURCE_DIR})
 
 if (NOT ANDROID AND NOT PS5)
