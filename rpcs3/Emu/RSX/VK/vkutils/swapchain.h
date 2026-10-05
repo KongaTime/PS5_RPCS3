@@ -6,6 +6,8 @@
 #include "swapchain_android.hpp"
 #elif defined (__APPLE__)
 #include "swapchain_macos.hpp"
+#elif defined (__PROSPERO__)
+#include "swapchain_ps5.hpp" // PS5: VK_KHR_display
 #else // Both linux and BSD families
 #include "swapchain_unix.hpp"
 #endif

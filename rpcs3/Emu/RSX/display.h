@@ -30,6 +30,8 @@ using display_handle_t = std::variant<
 	std::pair<wl_display*, wl_surface*>
 #elif defined(ANDROID)
 	struct ANativeWindow*
+#elif defined(__PROSPERO__)
+	std::monostate // PS5: no window; the title owns the whole display
 #endif
 >;
 #endif

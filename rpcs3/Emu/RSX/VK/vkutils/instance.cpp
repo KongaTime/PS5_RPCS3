@@ -181,6 +181,14 @@ namespace vk
 				found_surface_ext = true;
 			}
 #endif
+#ifdef __PROSPERO__
+			// PS5: no window system; the surface is a display plane (swapchain_ps5.hpp)
+			if (support.is_supported(VK_KHR_DISPLAY_EXTENSION_NAME))
+			{
+				extensions.push_back(VK_KHR_DISPLAY_EXTENSION_NAME);
+				found_surface_ext = true;
+			}
+#endif
 			if (!found_surface_ext)
 			{
 				rsx_log.error("Could not find a supported Vulkan surface extension");
