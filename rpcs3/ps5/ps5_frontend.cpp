@@ -444,6 +444,12 @@ int run(const char* boot_path)
 	Emu.SetHasGui(false);
 	Emu.SetHeadless(false);
 	Emu.SetUsr("00000001");
+	// What the desktop's main_application::InitializeEmulator says of the GPU:
+	// Vulkan through RADV, the title's own, is there. Without it a boot set the
+	// renderer back to Null ("not supported on this device"; PS5_RPCS3 b9ad001)
+	Emu.SetSupportedRenderers({video_renderer::null, video_renderer::vulkan});
+	Emu.SetDefaultRenderer(video_renderer::vulkan);
+
 	trace("frontend: Emu.Init");
 	Emu.Init();
 	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p, executable range at %p", vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr);
