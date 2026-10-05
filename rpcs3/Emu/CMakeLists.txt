@@ -57,6 +57,13 @@ if(PS5)
     endif()
     target_include_directories(rpcs3_emu PUBLIC ${PS5_VOLK_DIR})
     target_compile_options(rpcs3_emu PRIVATE "SHELL:-include ${PS5_VOLK_DIR}/volk.h")
+
+    # PS5: the console's libc has no iconv (cellL10n); GNU libiconv, built for it
+    # by the title (PS5_RPCS3Title's rpcs3/build-libiconv.sh), which links it
+    if(NOT PS5_ICONV_DIR)
+        message(FATAL_ERROR "PS5: set PS5_ICONV_DIR to the console's libiconv (include/iconv.h)")
+    endif()
+    target_include_directories(rpcs3_emu BEFORE PRIVATE ${PS5_ICONV_DIR}/include)
 endif()
 
 # For stdafx.h
