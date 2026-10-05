@@ -18,6 +18,7 @@
 #include "util/asm.hpp"
 
 #include <ps5platform/shm.h>
+#include <ps5platform/kernel.h>
 
 #include <sys/mman.h>
 #include <errno.h>
@@ -47,6 +48,13 @@ namespace utils
 			case protection::rx: return PS5_SHM_READ | PS5_SHM_EXEC;
 			}
 			return 0;
+		}
+
+		int kernel_protection(protection prot)
+		{
+			const int p = ps5_protection(prot);
+			return (p & PS5_SHM_READ ? PS5_KERNEL_PROT_CPU_READ : 0) | (p & PS5_SHM_WRITE ? PS5_KERNEL_PROT_CPU_WRITE : 0) |
+				(p & PS5_SHM_EXEC ? PS5_KERNEL_PROT_CPU_EXEC : 0);
 		}
 
 		int posix_protection(protection prot)
@@ -167,22 +175,39 @@ namespace utils
 			return;
 		}
 
-		// Mapped memory (committed units, shared-memory views) changes protection
-		// in place; reserved space that nothing backs yet is committed with it
+		// Mapping by mapping: memory already mapped (shared-memory views, committed
+		// units) changes protection in place with the kernel's own call (libc's
+		// mprotect refused the guest's memory views: EINVAL); reserved space that
+		// nothing backs yet is committed with that protection
 		const auto [page, bytes] = page_span(pointer, size);
-		if (::mprotect(page, bytes, posix_protection(prot)) == 0)
-		{
-			return;
-		}
+		const u64 end = reinterpret_cast<u64>(page) + bytes;
 
-		const int error = errno;
-		if (is_reserved(reinterpret_cast<u64>(pointer)))
+		for (u64 at = reinterpret_cast<u64>(page); at < end;)
 		{
-			memory_commit(pointer, size, prot);
-			return;
-		}
+			void* start = nullptr;
+			void* stop = nullptr;
+			u32 current = 0;
+			u64 next = at + ps5_page_size;
 
-		fmt::throw_exception("memory_protect(%p, 0x%x, %d) failed (errno=%d)", pointer, size, static_cast<int>(prot), error);
+			if (sceKernelQueryMemoryProtection(reinterpret_cast<void*>(at), &start, &stop, &current) == 0 &&
+				reinterpret_cast<u64>(start) <= at && reinterpret_cast<u64>(stop) > at)
+			{
+				next = std::min<u64>(end, reinterpret_cast<u64>(stop));
+				if (sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(prot)) == 0)
+				{
+					at = next;
+					continue;
+				}
+			}
+
+			if (!is_reserved(at))
+			{
+				fmt::throw_exception("memory_protect(%p, 0x%x, %d): 0x%x is neither mapped nor reserved", pointer, size, static_cast<int>(prot), at);
+			}
+
+			memory_commit(reinterpret_cast<void*>(at), next - at, prot);
+			at = next;
+		}
 	}
 
 	bool memory_lock(void* pointer, usz size)
