@@ -10,6 +10,7 @@
 #include "ps5_frontend.h"
 #include "ps5_gs_frame.h"
 #include "ps5_pad_handler.h"
+#include "ps5_firmware.h"
 #include "Input/pad_thread.h"
 
 #include "util/logs.hpp"
@@ -390,6 +391,21 @@ int run(const char* boot_path)
 	trace("frontend: Emu.Init");
 	Emu.Init();
 	trace("frontend: Emu.Init done");
+
+	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
+	// as the desktop's File > Install Firmware does (ps5_firmware.cpp)
+	const std::string pup_path = "/app0/PS3UPDAT.PUP";
+	if (fs::is_file(pup_path))
+	{
+		trace("firmware: installing from %s", pup_path);
+		switch (ps5_install_firmware(pup_path))
+		{
+		case ps5_firmware_result::installed: trace("firmware: installed"); break;
+		case ps5_firmware_result::already_installed: trace("firmware: that version is installed already"); break;
+		case ps5_firmware_result::failed: trace("firmware: installation failed (see the lines above)"); break;
+		case ps5_firmware_result::no_file: trace("firmware: %s could not be opened", pup_path); break;
+		}
+	}
 
 	const std::string firmware = utils::get_firmware_version();
 	sys_log.always()("PS3 system software: %s", firmware.empty() ? "missing" : firmware);

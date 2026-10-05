@@ -6,11 +6,12 @@ add_library(rpcs3_ps5 STATIC
     ps5_frontend.cpp
     ps5_gs_frame.cpp
     ps5_pad_handler.cpp
+    ps5_firmware.cpp
     ../Input/pad_thread.cpp
     ../Input/product_info.cpp
     ../Input/ps_move_config.cpp
     ../Input/ps_move_tracker.cpp
     ../rpcs3_version.cpp
 )
-target_link_libraries(rpcs3_ps5 PUBLIC rpcs3_emu 3rdparty::fusion) # Fusion: the pad thread's motion filter
+target_link_libraries(rpcs3_ps5 PUBLIC rpcs3_emu 3rdparty::fusion 3rdparty::zlib) # Fusion: the pad thread's motion filter; zlib: the SCE decrypter (firmware)
 target_compile_options(rpcs3_ps5 PRIVATE "SHELL:-include ${PS5_VOLK_DIR}/volk.h")
