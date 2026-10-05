@@ -64,6 +64,11 @@ if(PS5)
         message(FATAL_ERROR "PS5: set PS5_ICONV_DIR to the console's libiconv (include/iconv.h)")
     endif()
     target_include_directories(rpcs3_emu BEFORE PRIVATE ${PS5_ICONV_DIR}/include)
+
+    # PS5: virtual memory and shared memory through the platform layer's ranges
+    # and direct-memory objects (ps5platform/shm.h), not POSIX mmap
+    set_source_files_properties(../util/vm_native.cpp PROPERTIES HEADER_FILE_ONLY ON)
+    target_sources(rpcs3_emu PRIVATE ../util/vm_native_ps5.cpp)
 endif()
 
 # For stdafx.h

@@ -76,6 +76,11 @@ namespace utils
 #endif
 		u32 m_flags{};
 		u64 m_size{};
+#ifdef __PROSPERO__
+		// PS5: the direct-memory object (ps5platform/shm.h, util/vm_native_ps5.cpp)
+		s64 m_direct_start = -1;
+		u64 m_direct_bytes = 0;
+#endif
 		atomic_t<void*> m_ptr{nullptr};
 		std::string m_storage;
 
