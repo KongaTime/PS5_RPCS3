@@ -404,7 +404,7 @@ int run(const char* boot_path)
 	Emu.SetUsr("00000001");
 	trace("frontend: Emu.Init");
 	Emu.Init();
-	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p", vm::g_base_addr, vm::g_sudo_addr);
+	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p, executable range at %p", vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr);
 
 	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
 	// as the desktop's File > Install Firmware does (ps5_firmware.cpp)

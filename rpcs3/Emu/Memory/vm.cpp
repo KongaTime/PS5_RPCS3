@@ -40,7 +40,15 @@ namespace vm
 	}
 
 	// Emulated virtual memory
+#ifdef __PROSPERO__
+	// PS5: the guest layout from 0x10_0000_0000 up (PS5_PayloadSDK's PROBE.md: RPCS3's 8, 12,
+	// 32 and 4 GiB ranges reserved there, one after another). Lower, the search took
+	// 0x5_0000_0000 to 0xC_0000_0000, and the kernel refused to map memory into the
+	// executable range at 0x9_0000_0000 (memory_commit: 0x80020016)
+	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0xF'0000'0000), 0x2'0000'0000, true);
+#else
 	u8* const g_base_addr = memory_reserve_4GiB(reinterpret_cast<void*>(0x2'0000'0000), 0x2'0000'0000, true);
+#endif
 
 	// Unprotected virtual memory mirror
 	u8* const g_sudo_addr = g_base_addr + 0x1'0000'0000;
