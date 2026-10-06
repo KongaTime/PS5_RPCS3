@@ -135,9 +135,30 @@ namespace utils
 			}
 			base = use_addr;
 		}
-		else if (ps5_vrange_reserve(size, nullptr, 0x10000, &base) != 0)
+		else
 		{
-			return nullptr;
+			// Anywhere means from 0x40_0000_0000 up, in order: the kernel's own
+			// choice was 0x8_0000_0000 to 0xA_0000_0000, where it then refused to
+			// commit memory (the JIT's code reservations, memory_commit EINVAL,
+			// on my console), as it had refused the guest's executable range
+			// there. The guest's ranges are at 0x10_0000_0000 and the title heap
+			// at 0x20_0000_0000 (ps5platform/heap.h)
+			static std::mutex s_lock;
+			static u64 s_next = 0x40'0000'0000;
+			std::lock_guard lock(s_lock);
+			for (u32 tries = 0; tries < 256 && !base; tries++)
+			{
+				if (ps5_vrange_reserve_at(reinterpret_cast<void*>(s_next), size) == 0)
+				{
+					base = reinterpret_cast<void*>(s_next);
+				}
+				s_next += utils::align<u64>(size, 0x1'0000'0000);
+			}
+
+			if (!base)
+			{
+				return nullptr;
+			}
 		}
 
 		std::lock_guard lock(g_ranges_lock);
