@@ -1495,7 +1495,12 @@ bool fs::create_dir(const std::string& path)
 
 	return true;
 #else
+#ifdef __PROSPERO__
+	// PS5: open to all, so FTP can add to and delete what the title makes
+	if (::mkdir(path.c_str(), 0777) != 0)
+#else
 	if (::mkdir(path.c_str(), S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH) != 0)
+#endif
 	{
 		g_tls_error = to_error(errno);
 		return false;
@@ -1696,7 +1701,11 @@ bool fs::copy_file(const std::string& from, const std::string& to, bool overwrit
 		return false;
 	}
 
+#ifdef __PROSPERO__
+	const int output = ::open(to.c_str(), O_WRONLY | O_CREAT | (overwrite ? O_TRUNC : O_EXCL), 0666);
+#else
 	const int output = ::open(to.c_str(), O_WRONLY | O_CREAT | (overwrite ? O_TRUNC : O_EXCL), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+#endif
 	if (output == -1)
 	{
 		const int err = errno;
@@ -2072,7 +2081,12 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 	if (mode & fs::trunc && !(mode & fs::lock)) flags |= O_TRUNC;
 	if (mode & fs::excl) flags |= O_EXCL;
 
+#ifdef __PROSPERO__
+	// PS5: writable by all, so FTP can replace and delete what the title writes
+	int perm = 0666;
+#else
 	int perm = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;
+#endif
 
 	if (mode & fs::write && mode & fs::unread)
 	{

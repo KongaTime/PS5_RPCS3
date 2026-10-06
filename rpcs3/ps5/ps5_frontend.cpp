@@ -49,6 +49,9 @@
 #include <ps5platform/kernel.h>
 
 #include <condition_variable>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <csignal>
 #include <ucontext.h>
 #include <cstdio>
@@ -78,6 +81,102 @@ namespace
 		{
 			g_trace(fmt::format(format, args...).c_str());
 		}
+	}
+
+	// Every file and folder under path made readable and writable by all, and
+	// each folder searchable: what the title writes is otherwise the title's
+	// alone, and FTP could read config.yml but not replace or delete it
+	// (fs_move_failed, on my console). Returns how many it changed
+	usz open_to_ftp(const std::string& path)
+	{
+		usz changed = 0;
+		DIR* const dir = ::opendir(path.c_str());
+		if (!dir)
+		{
+			return 0;
+		}
+
+		while (const dirent* entry = ::readdir(dir))
+		{
+			const std::string_view name = entry->d_name;
+			if (name == "." || name == "..")
+			{
+				continue;
+			}
+
+			const std::string child = path + "/" + std::string(name);
+			struct ::stat st{};
+			if (::lstat(child.c_str(), &st) != 0)
+			{
+				continue;
+			}
+
+			const bool folder = S_ISDIR(st.st_mode);
+			const mode_t mode = folder ? 0777 : 0666;
+			if ((st.st_mode & 0777) != mode && ::chmod(child.c_str(), mode) == 0)
+			{
+				changed++;
+			}
+
+			if (folder)
+			{
+				changed += open_to_ftp(child);
+			}
+		}
+
+		::closedir(dir);
+		return changed;
+	}
+
+	// The compiled modules under path that have no IR log beside them
+	// (<name>.obj.log), removed so they compile again and write one. Returns
+	// how many
+	usz remove_objects_without_logs(const std::string& path)
+	{
+		usz removed = 0;
+		DIR* const dir = ::opendir(path.c_str());
+		if (!dir)
+		{
+			return 0;
+		}
+
+		std::vector<std::string> objects;
+		while (const dirent* entry = ::readdir(dir))
+		{
+			const std::string_view name = entry->d_name;
+			if (name == "." || name == "..")
+			{
+				continue;
+			}
+
+			const std::string child = path + "/" + std::string(name);
+			struct ::stat st{};
+			if (::lstat(child.c_str(), &st) != 0)
+			{
+				continue;
+			}
+
+			if (S_ISDIR(st.st_mode))
+			{
+				removed += remove_objects_without_logs(child);
+			}
+			else if (name.ends_with(".obj"))
+			{
+				objects.push_back(child);
+			}
+		}
+
+		::closedir(dir);
+
+		for (const std::string& object : objects)
+		{
+			if (!fs::is_file(object + ".log") && ::unlink(object.c_str()) == 0)
+			{
+				removed++;
+			}
+		}
+
+		return removed;
 	}
 
 	// The console's display, as swapchain_ps5.hpp chooses it
@@ -434,6 +533,11 @@ int run(const char* boot_path)
 	trace("frontend: start");
 	record_signals();
 
+	// What RPCS3 writes from here on is open to FTP (files 0666, folders 0777),
+	// and what earlier runs wrote is opened now
+	::umask(0);
+	trace("frontend: %u files and folders under /app0/rpcs3 opened to FTP", open_to_ftp("/app0/rpcs3"));
+
 	// The fault handler's readable copy of the title's code (Utilities/Thread.cpp)
 	if (ps5_load_code_copy("/app0/rpcs3-code.bin"))
 	{
@@ -555,12 +659,35 @@ int run(const char* boot_path)
 		llvm_cpu = fs::file("/app0/rpcs3-llvm-cpu.txt").to_string();
 		llvm_cpu = llvm_cpu.substr(0, llvm_cpu.find_first_of(" \r\n\t"));
 	}
+	// The recompilers emit SSSE3 at least: with "x86-64" the PPU compile
+	// threads died (Cannot select: X86ISD::PSHUFB, on my console) and the boot
+	// waited forever for their modules
+	if (llvm_cpu == "x86-64" || llvm_cpu == "generic")
+	{
+		trace("config: LLVM CPU %s ignored: RPCS3's code needs SSSE3 at least (x86-64-v2 or later)", llvm_cpu);
+		llvm_cpu.clear();
+	}
 	if (g_cfg.core.llvm_cpu.to_string() != llvm_cpu)
 	{
 		g_cfg.core.llvm_cpu.from_string(llvm_cpu);
 		Emulator::SaveSettings(g_cfg.to_string(), "");
 	}
 	trace("config: LLVM CPU %s", llvm_cpu.empty() ? std::string("(the host's)") : llvm_cpu);
+
+	// LLVM's logs, where /app0/rpcs3-llvm-logs.txt asks for them: each PPU
+	// module's IR beside its object (<name>.obj.log), to compile the same IR on
+	// a PC and compare the code. Modules cached without one are removed, so
+	// they compile again and write it
+	const bool llvm_logs = fs::is_file("/app0/rpcs3-llvm-logs.txt");
+	if (g_cfg.core.llvm_logs.get() != llvm_logs)
+	{
+		g_cfg.core.llvm_logs.set(llvm_logs);
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+	}
+	if (llvm_logs)
+	{
+		trace("config: LLVM logs on; %u cached modules without one removed", remove_objects_without_logs(fs::get_cache_dir() + "cache"));
+	}
 
 	// The renderer draws through VK_KHR_display (ps5_gs_frame); the configuration
 	// the first runs saved chose Null, which drew nothing. And no GDB server:
