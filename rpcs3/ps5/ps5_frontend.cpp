@@ -509,19 +509,28 @@ int run(const char* boot_path)
 	sys_log.always()("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
 	trace("PS3 system software: %s", firmware.empty() ? "missing" : firmware);
 
-	// No LLVM in this build yet: the PPU and SPU interpreters, saved in the global
-	// configuration (config.yml), which a boot reads
+	// The decoders: LLVM's recompilers where the build has LLVM, the
+	// interpreters otherwise, or where /app0/rpcs3-interpreter.txt asks for them
+	// (to tell a recompiler's fault from the emulator's). Saved in the global
+	// configuration (config.yml), which a boot reads.
 	// And no precompilation: booting the home menu from dev_flash analysed every
 	// module of the system software first, 13 minutes behind a progress bar on
-	// my console (5f51dfd), for an LLVM this build lacks
-	if (g_cfg.core.ppu_decoder != ppu_decoder_type::_static || g_cfg.core.spu_decoder != spu_decoder_type::_static || g_cfg.core.llvm_precompilation)
+	// my console (5f51dfd); modules are compiled as they load, and cached
+#ifdef LLVM_AVAILABLE
+	const bool use_llvm = !fs::is_file("/app0/rpcs3-interpreter.txt");
+#else
+	const bool use_llvm = false;
+#endif
+	const ppu_decoder_type ppu_decoder = use_llvm ? ppu_decoder_type::llvm : ppu_decoder_type::_static;
+	const spu_decoder_type spu_decoder = use_llvm ? spu_decoder_type::llvm : spu_decoder_type::_static;
+	if (g_cfg.core.ppu_decoder != ppu_decoder || g_cfg.core.spu_decoder != spu_decoder || g_cfg.core.llvm_precompilation)
 	{
-		g_cfg.core.ppu_decoder.set(ppu_decoder_type::_static);
-		g_cfg.core.spu_decoder.set(spu_decoder_type::_static);
+		g_cfg.core.ppu_decoder.set(ppu_decoder);
+		g_cfg.core.spu_decoder.set(spu_decoder);
 		g_cfg.core.llvm_precompilation.set(false);
 		Emulator::SaveSettings(g_cfg.to_string(), "");
-		trace("config: PPU and SPU interpreters, no precompilation (no LLVM in this build)");
 	}
+	trace("config: %s, no precompilation", use_llvm ? "PPU and SPU recompilers (LLVM)" : "PPU and SPU interpreters");
 
 	// The renderer draws through VK_KHR_display (ps5_gs_frame); the configuration
 	// the first runs saved chose Null, which drew nothing. And no GDB server:
