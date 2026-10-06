@@ -94,6 +94,12 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 
 #include "util/vm.hpp"
 #ifdef __PROSPERO__
+#define PS5_READABLE_CODE(p) ps5_readable_code(p)
+#else
+#define PS5_READABLE_CODE(p) (p)
+#endif
+
+#ifdef __PROSPERO__
 #include <ps5platform/heap.h>
 #include <ps5platform/libc.h>
 
@@ -109,6 +115,78 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 // that overran its stack faulted again in the handler, which then ran on it:
 // the kernel ended the title with nothing recorded (the PS3 home menu, twice,
 // about 60 s into its XMB). With this the overrun is reported like any fault.
+// PS5: the title's code is mapped execute-only, and reading it ends the title
+// at once (SYSTEM_XO_VIOLATION, 0xa0020328: the PS3 home menu's main thread on
+// my console, with no signal to report it). The fault handler reads the
+// faulting instruction to emulate the access (decode_x64_reg_op); it reads
+// from a copy of the code segment instead, which the build writes beside
+// eboot.bin (rpcs3-code.bin: "PS5CODE1", the link address of
+// ps5_code_copy_anchor, the segment's link address and size, its bytes)
+extern "C" __attribute__((noinline, used)) void ps5_code_copy_anchor()
+{
+	__asm__ volatile("");
+}
+
+namespace
+{
+	struct ps5_code_copy_t
+	{
+		const u8* bytes = nullptr;
+		u64 begin = 0;
+		u64 size = 0;
+	};
+
+	ps5_code_copy_t g_ps5_code;
+}
+
+// Called once by the frontend before the emulator runs
+bool ps5_load_code_copy(const char* path)
+{
+	FILE* const file = std::fopen(path, "rb");
+	if (!file)
+	{
+		return false;
+	}
+
+	struct
+	{
+		char magic[8];
+		u64 anchor;
+		u64 vaddr;
+		u64 size;
+	} header{};
+
+	bool loaded = false;
+	if (std::fread(&header, sizeof(header), 1, file) == 1 && std::memcmp(header.magic, "PS5CODE1", 8) == 0)
+	{
+		u8* const bytes = new u8[header.size];
+		if (std::fread(bytes, 1, header.size, file) == header.size)
+		{
+			const u64 base = reinterpret_cast<u64>(&ps5_code_copy_anchor) - header.anchor;
+			g_ps5_code = {bytes, base + header.vaddr, header.size};
+			loaded = true;
+		}
+		else
+		{
+			delete[] bytes;
+		}
+	}
+
+	std::fclose(file);
+	return loaded;
+}
+
+// The bytes of code at p, readable: the copy's for the title's code segment
+static const u8* ps5_readable_code(const u8* p)
+{
+	const u64 address = reinterpret_cast<u64>(p);
+	if (g_ps5_code.bytes && address - g_ps5_code.begin < g_ps5_code.size)
+	{
+		return g_ps5_code.bytes + (address - g_ps5_code.begin);
+	}
+	return p;
+}
+
 static void ps5_alt_stack(bool install)
 {
 	thread_local std::unique_ptr<u8[]> s_stack;
@@ -1109,7 +1187,7 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	else if (reg == X64_IMM8)
 	{
 		// load the immediate value (assuming it's at the end of the instruction)
-		const s8 imm_value = *reinterpret_cast<s8*>(RIP(context) + i_size - 1);
+		const s8 imm_value = *reinterpret_cast<const s8*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 1);
 
 		switch (d_size)
 		{
@@ -1121,7 +1199,7 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	}
 	else if (reg == X64_IMM16)
 	{
-		const s16 imm_value = *reinterpret_cast<s16*>(RIP(context) + i_size - 2);
+		const s16 imm_value = *reinterpret_cast<const s16*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 2);
 
 		switch (d_size)
 		{
@@ -1130,7 +1208,7 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	}
 	else if (reg == X64_IMM32)
 	{
-		const s32 imm_value = *reinterpret_cast<s32*>(RIP(context) + i_size - 4);
+		const s32 imm_value = *reinterpret_cast<const s32*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 4);
 
 		switch (d_size)
 		{
@@ -1649,7 +1727,7 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 	}
 
 #if defined(ARCH_X64)
-	const u8* const code = reinterpret_cast<u8*>(RIP(context));
+	const u8* const code = PS5_READABLE_CODE(reinterpret_cast<u8*>(RIP(context)));
 
 	x64_op_t op;
 	x64_reg_t reg;

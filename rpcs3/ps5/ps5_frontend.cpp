@@ -60,6 +60,9 @@
 LOG_CHANNEL(sys_log, "SYS");
 LOG_CHANNEL(ps5_log, "PS5");
 
+// Utilities/Thread.cpp, on the PS5
+bool ps5_load_code_copy(const char* path);
+
 namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
@@ -430,6 +433,16 @@ int run(const char* boot_path)
 {
 	trace("frontend: start");
 	record_signals();
+
+	// The fault handler's readable copy of the title's code (Utilities/Thread.cpp)
+	if (ps5_load_code_copy("/app0/rpcs3-code.bin"))
+	{
+		trace("frontend: code copy loaded");
+	}
+	else
+	{
+		trace("frontend: no /app0/rpcs3-code.bin: a fault in the title's code cannot be emulated");
+	}
 
 	// RPCS3's configuration, dev_hdd0 and log go to /app0/rpcs3/, its caches to
 	// /app0/rpcs3/cache/ (fs::get_config_dir and get_cache_dir on PS5)
