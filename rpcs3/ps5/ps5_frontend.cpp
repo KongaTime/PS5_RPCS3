@@ -521,6 +521,17 @@ int run(const char* boot_path)
 		trace("config: Vulkan renderer, no GDB server");
 	}
 
+	// No shader interpreter: the home menu's XMB on my console (688c9aa) froze
+	// again and again under it and the title then ended with a system error
+	// and memory to spare, as after a GPU hang. Shaders are compiled for each
+	// program instead, off the render thread; objects wait for theirs
+	if (g_cfg.video.shadermode == shader_mode::async_with_interpreter || g_cfg.video.shadermode == shader_mode::interpreter_only)
+	{
+		g_cfg.video.shadermode.set(shader_mode::async_recompiler);
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+		trace("config: shaders compiled asynchronously, without the shader interpreter");
+	}
+
 	// Nothing named to boot: the PS3's own home menu, as the desktop's Boot VSH
 	std::string vsh_path;
 	if ((!boot_path || !*boot_path) && !firmware.empty())
