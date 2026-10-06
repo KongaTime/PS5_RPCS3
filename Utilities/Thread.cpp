@@ -1757,13 +1757,28 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 	const u8* const code = PS5_READABLE_CODE(reinterpret_cast<u8*>(RIP(context)));
 
 #ifdef __PROSPERO__
+	// Code the title cannot read (a system module's: its memcpy, called by the
+	// RSX thread) is never read: the instruction is decoded only to emulate a
+	// RawSPU register access, and what follows (a page another thread has
+	// already opened, the emulator stopping, the thread's own report) needs
+	// only the address. Ending here took the RSX thread down on a write to
+	// local memory with the home menu running on LLVM (on my console)
 	if (!code)
 	{
-		// Not ours to read (a system module's code): reported as a fault, with
-		// its backtrace, rather than read and ended by the kernel
-		sig_log.error("Access violation in code the title cannot read, at %p (location 0x%x, %s)", reinterpret_cast<void*>(RIP(context)), addr, is_writing ? "writing" : "reading");
-		return false;
+		static atomic_t<u32> s_reported = 0;
+		if (s_reported++ < 20)
+		{
+			sig_log.error("Access violation in code the title cannot read, at %p (location 0x%x, %s; the page %s readable, %s writable)", reinterpret_cast<void*>(RIP(context)), addr, is_writing ? "writing" : "reading",
+				vm::check_addr(addr, vm::page_readable) ? "is" : "is not", vm::check_addr(addr, vm::page_writable) ? "is" : "is not");
+		}
+
+		if (addr - RAW_SPU_BASE_ADDR < (6 * RAW_SPU_OFFSET))
+		{
+			return false;
+		}
 	}
+	else
+	{
 #endif
 
 	x64_op_t op;
@@ -1990,6 +2005,9 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 		g_tls_fault_spu++;
 		return true;
 	} while (0);
+#ifdef __PROSPERO__
+	}
+#endif
 #elif defined(ARCH_ARM64)
 	const u8* const code = reinterpret_cast<u8*>(RIP(context));
 
