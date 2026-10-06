@@ -128,8 +128,8 @@ namespace
 		return changed;
 	}
 
-	// The compiled modules under path that have no IR log beside them
-	// (<name>.obj.log), removed so they compile again and write one. Returns
+	// The compiled modules under path (<name>.obj.gz) that have no IR log
+	// beside them (<name>.obj.log), removed so they compile again and write one. Returns
 	// how many
 	usz remove_objects_without_logs(const std::string& path)
 	{
@@ -160,8 +160,9 @@ namespace
 			{
 				removed += remove_objects_without_logs(child);
 			}
-			else if (name.ends_with(".obj"))
+			else if (name.ends_with(".obj.gz"))
 			{
+				// Cached compressed (JITLLVM.cpp's ObjectCache); the log is <name>.obj.log
 				objects.push_back(child);
 			}
 		}
@@ -170,7 +171,7 @@ namespace
 
 		for (const std::string& object : objects)
 		{
-			if (!fs::is_file(object + ".log") && ::unlink(object.c_str()) == 0)
+			if (!fs::is_file(object.substr(0, object.size() - 3) + ".log") && ::unlink(object.c_str()) == 0)
 			{
 				removed++;
 			}
