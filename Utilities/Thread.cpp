@@ -101,6 +101,7 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 
 #ifdef __PROSPERO__
 #include <ps5platform/heap.h>
+#include <ps5platform/kernel.h>
 #include <ps5platform/libc.h>
 
 // PS5: a thread's end runs its C++ thread_local destructors before libkernel's
@@ -176,13 +177,24 @@ bool ps5_load_code_copy(const char* path)
 	return loaded;
 }
 
-// The bytes of code at p, readable: the copy's for the title's code segment
+// The bytes of code at p, readable: the copy's for the title's code segment,
+// p itself where the kernel says it is readable (the JIT's code), or null:
+// the system modules' code is execute-only too (the PS3 home menu's
+// rsx::thread ended on SYSTEM_XO_VIOLATION with the PPU recompiler on)
 static const u8* ps5_readable_code(const u8* p)
 {
 	const u64 address = reinterpret_cast<u64>(p);
 	if (g_ps5_code.bytes && address - g_ps5_code.begin < g_ps5_code.size)
 	{
 		return g_ps5_code.bytes + (address - g_ps5_code.begin);
+	}
+
+	void* start = nullptr;
+	void* end = nullptr;
+	u32 prot = 0;
+	if (sceKernelQueryMemoryProtection(const_cast<u8*>(p), &start, &end, &prot) != 0 || !(prot & PS5_KERNEL_PROT_CPU_READ))
+	{
+		return nullptr;
 	}
 	return p;
 }
@@ -1187,7 +1199,12 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	else if (reg == X64_IMM8)
 	{
 		// load the immediate value (assuming it's at the end of the instruction)
-		const s8 imm_value = *reinterpret_cast<const s8*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 1);
+		const u8* const imm_code = PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context)));
+		if (!imm_code)
+		{
+			return false;
+		}
+		const s8 imm_value = *reinterpret_cast<const s8*>(imm_code + i_size - 1);
 
 		switch (d_size)
 		{
@@ -1199,7 +1216,12 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	}
 	else if (reg == X64_IMM16)
 	{
-		const s16 imm_value = *reinterpret_cast<const s16*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 2);
+		const u8* const imm_code = PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context)));
+		if (!imm_code)
+		{
+			return false;
+		}
+		const s16 imm_value = *reinterpret_cast<const s16*>(imm_code + i_size - 2);
 
 		switch (d_size)
 		{
@@ -1208,7 +1230,12 @@ bool get_x64_reg_value(x64_context* context, x64_reg_t reg, usz d_size, usz i_si
 	}
 	else if (reg == X64_IMM32)
 	{
-		const s32 imm_value = *reinterpret_cast<const s32*>(PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context))) + i_size - 4);
+		const u8* const imm_code = PS5_READABLE_CODE(reinterpret_cast<const u8*>(RIP(context)));
+		if (!imm_code)
+		{
+			return false;
+		}
+		const s32 imm_value = *reinterpret_cast<const s32*>(imm_code + i_size - 4);
 
 		switch (d_size)
 		{
@@ -1728,6 +1755,16 @@ bool handle_access_violation(u32 addr, bool is_writing, bool is_exec, ucontext_t
 
 #if defined(ARCH_X64)
 	const u8* const code = PS5_READABLE_CODE(reinterpret_cast<u8*>(RIP(context)));
+
+#ifdef __PROSPERO__
+	if (!code)
+	{
+		// Not ours to read (a system module's code): reported as a fault, with
+		// its backtrace, rather than read and ended by the kernel
+		sig_log.error("Access violation in code the title cannot read, at %p (location 0x%x, %s)", reinterpret_cast<void*>(RIP(context)), addr, is_writing ? "writing" : "reading");
+		return false;
+	}
+#endif
 
 	x64_op_t op;
 	x64_reg_t reg;
