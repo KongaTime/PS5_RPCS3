@@ -543,6 +543,25 @@ int run(const char* boot_path)
 	}
 	trace("config: PPU %s, SPU %s, no precompilation", ppu_llvm ? "recompiler (LLVM)" : "interpreter", spu_llvm ? "recompiler (LLVM)" : "interpreter");
 
+	// The CPU LLVM compiles for: the host's own (empty), or the first word of
+	// /app0/rpcs3-llvm-cpu.txt ("x86-64", "x86-64-v2", "znver1"...). The PPU
+	// recompiler's code computed wrong values on my console where the
+	// interpreter's did not (the home menu read a float as a pointer), and a
+	// plainer target tells a CPU feature's fault from LLVM's or ours. Compiled
+	// code is cached per CPU name, so a change compiles anew
+	std::string llvm_cpu;
+	if (fs::is_file("/app0/rpcs3-llvm-cpu.txt"))
+	{
+		llvm_cpu = fs::file("/app0/rpcs3-llvm-cpu.txt").to_string();
+		llvm_cpu = llvm_cpu.substr(0, llvm_cpu.find_first_of(" \r\n\t"));
+	}
+	if (g_cfg.core.llvm_cpu.to_string() != llvm_cpu)
+	{
+		g_cfg.core.llvm_cpu.from_string(llvm_cpu);
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+	}
+	trace("config: LLVM CPU %s", llvm_cpu.empty() ? std::string("(the host's)") : llvm_cpu);
+
 	// The renderer draws through VK_KHR_display (ps5_gs_frame); the configuration
 	// the first runs saved chose Null, which drew nothing. And no GDB server:
 	// nothing on the console attaches to it, and its socket failed to bind
