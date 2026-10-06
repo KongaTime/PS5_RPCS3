@@ -11,6 +11,8 @@
 #include "Crypto/unzip.h"
 
 #include <charconv>
+#include <cmath>
+#include <cstring>
 
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -42,6 +44,7 @@ LOG_CHANNEL(jit_log, "JIT");
 #include "llvm/TargetParser/Host.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/Object/ObjectFile.h"
@@ -683,10 +686,80 @@ bool jit_compiler::add_sub_disk_space(ssz space)
 	}).second;
 }
 
+#ifdef __PROSPERO__
+// PS5: the compiler runtime's helpers that generated x86 code may call
+extern "C" void __divti3();
+extern "C" void __udivti3();
+extern "C" void __modti3();
+extern "C" void __umodti3();
+extern "C" void __extendhfsf2();
+extern "C" void __truncsfhf2();
+extern "C" void __truncdfhf2();
+
+// The C library and compiler runtime functions generated code may call, which
+// LLVM finds in the process with dlsym where there is one. A title has no
+// dlopen (LLVM's DynamicLibrary gives it a process with no symbols), so they
+// are named to LLVM here; anything else falls to RPCS3's own resolver
+static void ps5_register_jit_symbols()
+{
+	struct entry
+	{
+		const char* name;
+		void* address;
+	};
+
+	const entry entries[] =
+	{
+		{"memcpy", reinterpret_cast<void*>(static_cast<void* (*)(void*, const void*, size_t)>(&std::memcpy))},
+		{"memmove", reinterpret_cast<void*>(static_cast<void* (*)(void*, const void*, size_t)>(&std::memmove))},
+		{"memset", reinterpret_cast<void*>(static_cast<void* (*)(void*, int, size_t)>(&std::memset))},
+		{"memcmp", reinterpret_cast<void*>(static_cast<int (*)(const void*, const void*, size_t)>(&std::memcmp))},
+		{"fmod", reinterpret_cast<void*>(static_cast<double (*)(double, double)>(&::fmod))},
+		{"fmodf", reinterpret_cast<void*>(static_cast<float (*)(float, float)>(&::fmodf))},
+		{"floor", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::floor))},
+		{"floorf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::floorf))},
+		{"ceil", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::ceil))},
+		{"ceilf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::ceilf))},
+		{"trunc", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::trunc))},
+		{"truncf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::truncf))},
+		{"round", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::round))},
+		{"roundf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::roundf))},
+		{"rint", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::rint))},
+		{"rintf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::rintf))},
+		{"nearbyint", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::nearbyint))},
+		{"nearbyintf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::nearbyintf))},
+		{"sqrt", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::sqrt))},
+		{"sqrtf", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::sqrtf))},
+		{"exp2", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::exp2))},
+		{"exp2f", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::exp2f))},
+		{"log2", reinterpret_cast<void*>(static_cast<double (*)(double)>(&::log2))},
+		{"log2f", reinterpret_cast<void*>(static_cast<float (*)(float)>(&::log2f))},
+		{"fma", reinterpret_cast<void*>(static_cast<double (*)(double, double, double)>(&::fma))},
+		{"fmaf", reinterpret_cast<void*>(static_cast<float (*)(float, float, float)>(&::fmaf))},
+		{"__divti3", reinterpret_cast<void*>(&__divti3)},
+		{"__udivti3", reinterpret_cast<void*>(&__udivti3)},
+		{"__modti3", reinterpret_cast<void*>(&__modti3)},
+		{"__umodti3", reinterpret_cast<void*>(&__umodti3)},
+		{"__extendhfsf2", reinterpret_cast<void*>(&__extendhfsf2)},
+		{"__truncsfhf2", reinterpret_cast<void*>(&__truncsfhf2)},
+		{"__truncdfhf2", reinterpret_cast<void*>(&__truncdfhf2)},
+	};
+
+	for (const entry& e : entries)
+	{
+		llvm::sys::DynamicLibrary::AddSymbol(e.name, e.address);
+	}
+}
+#endif
+
 jit_compiler::jit_compiler(const std::unordered_map<std::string, u64>& _link, std::string_view _cpu, u32 flags, std::function<u64(const std::string&)> symbols_cement) noexcept
 	: m_context(new llvm::LLVMContext)
 	, m_cpu(cpu(_cpu))
 {
+#ifdef __PROSPERO__
+	[[maybe_unused]] static const bool s_ps5_jit_symbols = (ps5_register_jit_symbols(), true);
+#endif
+
 	[[maybe_unused]] static const bool s_install_llvm_error_handler = []()
 	{
 		llvm::remove_fatal_error_handler();
