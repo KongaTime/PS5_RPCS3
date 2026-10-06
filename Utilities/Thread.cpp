@@ -103,6 +103,36 @@ DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDesc
 // boot crashed in mspace_free from the platform's run_destructors, under
 // thread_base::finalize (PS5_RPCS3 0be3ada's backtrace)
 #define pthread_exit ps5_pthread_exit
+
+// PS5: a stack of its own for the fault handler, on each thread. Threads run on
+// 2 MiB stacks (the platform's pthread_create; 8 MiB on Linux), and a thread
+// that overran its stack faulted again in the handler, which then ran on it:
+// the kernel ended the title with nothing recorded (the PS3 home menu, twice,
+// about 60 s into its XMB). With this the overrun is reported like any fault.
+static void ps5_alt_stack(bool install)
+{
+	thread_local std::unique_ptr<u8[]> s_stack;
+
+	if (install && !s_stack)
+	{
+		constexpr usz size = 0x40000;
+		s_stack = std::make_unique<u8[]>(size);
+		stack_t alt{};
+		alt.ss_sp = s_stack.get();
+		alt.ss_size = size;
+		if (::sigaltstack(&alt, nullptr) != 0)
+		{
+			s_stack.reset();
+		}
+	}
+	else if (!install && s_stack)
+	{
+		stack_t alt{};
+		alt.ss_flags = SS_DISABLE;
+		::sigaltstack(&alt, nullptr);
+		s_stack.reset();
+	}
+}
 #endif
 #include "util/logs.hpp"
 #include "util/asm.hpp"
@@ -2749,7 +2779,10 @@ const bool s_exception_handler_set = []() -> bool
 	struct ::sigaction sa;
 	sa.sa_flags = SA_SIGINFO;
 #ifdef __PROSPERO__
-	sa.sa_flags |= SA_NODEFER;
+	// On the thread's own fault stack where it has one (ps5_alt_stack), the
+	// main thread's included
+	sa.sa_flags |= SA_NODEFER | SA_ONSTACK;
+	ps5_alt_stack(true);
 #endif
 	sigemptyset(&sa.sa_mask);
 	sa.sa_sigaction = signal_handler;
@@ -2855,6 +2888,10 @@ void thread_base::start()
 
 void thread_base::initialize(void (*error_cb)())
 {
+#ifdef __PROSPERO__
+	ps5_alt_stack(true);
+#endif
+
 #ifndef _WIN32
 #ifdef __APPLE__
 	while (!m_thread)
@@ -3059,6 +3096,9 @@ thread_base::native_entry thread_base::finalize(u64 _self) noexcept
 #ifdef _WIN32
 	_endthreadex(0);
 #else
+#ifdef __PROSPERO__
+	ps5_alt_stack(false);
+#endif
 	pthread_exit(nullptr);
 #endif
 
