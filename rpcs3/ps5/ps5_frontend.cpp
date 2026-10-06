@@ -62,6 +62,9 @@ namespace
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
 	void (*g_trace)(const char* line) = nullptr;
 
+	// Set once the boot has started the game
+	atomic_t<bool> g_booted = false;
+
 	template <usz N, typename... Args>
 	void trace(const char (&format)[N], const Args&... args)
 	{
@@ -91,7 +94,9 @@ namespace
 					msg->name, static_cast<int>(text.size()), text.data());
 			}
 
-			if (msg > logs::level::notice)
+			// Notices only until the game runs: its own (a file opened, a thread
+			// made) filled the trace's 6000 within a second of the home menu's start
+			if (msg > (g_booted ? logs::level::warning : logs::level::notice))
 			{
 				return;
 			}
@@ -480,12 +485,16 @@ int run(const char* boot_path)
 
 	// No LLVM in this build yet: the PPU and SPU interpreters, saved in the global
 	// configuration (config.yml), which a boot reads
-	if (g_cfg.core.ppu_decoder != ppu_decoder_type::_static || g_cfg.core.spu_decoder != spu_decoder_type::_static)
+	// And no precompilation: booting the home menu from dev_flash analysed every
+	// module of the system software first, 13 minutes behind a progress bar on
+	// my console (5f51dfd), for an LLVM this build lacks
+	if (g_cfg.core.ppu_decoder != ppu_decoder_type::_static || g_cfg.core.spu_decoder != spu_decoder_type::_static || g_cfg.core.llvm_precompilation)
 	{
 		g_cfg.core.ppu_decoder.set(ppu_decoder_type::_static);
 		g_cfg.core.spu_decoder.set(spu_decoder_type::_static);
+		g_cfg.core.llvm_precompilation.set(false);
 		Emulator::SaveSettings(g_cfg.to_string(), "");
-		trace("config: PPU and SPU interpreters (no LLVM in this build)");
+		trace("config: PPU and SPU interpreters, no precompilation (no LLVM in this build)");
 	}
 
 	// The renderer draws through VK_KHR_display (ps5_gs_frame); the configuration
@@ -525,6 +534,7 @@ int run(const char* boot_path)
 		else
 		{
 			trace("frontend: booted; running until the emulation stops");
+			g_booted = true;
 
 			// Every five seconds, in the trace: the emulation's state, the frames
 			// RSX flipped, and where the PPU threads are, to tell a stall from slow
