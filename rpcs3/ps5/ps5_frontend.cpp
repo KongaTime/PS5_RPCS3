@@ -21,6 +21,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
+#include "Emu/system_progress.hpp"
 #include "Emu/vfs_config.h"
 #include "Emu/IdManager.h"
 #include "Emu/Memory/vm.h"
@@ -757,9 +758,14 @@ int run(const char* boot_path)
 					int64_t direct_start = 0;
 					sceKernelAvailableFlexibleMemorySize(&flexible);
 					sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(), 0x4000, &direct_start, &direct);
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; %d PPU threads:%s", seconds + 1,
+					// And the progress dialog's counters: the PPU thread waits for them
+					// to be cleared before running the game (PPUThread.cpp,
+					// ppu_cmd::initialize), and with both recompilers the home menu
+					// stayed on its loading screen with no PPU code run (974d605)
+					const std::string progress_text = g_progr_text;
+					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; %d PPU threads:%s", seconds + 1,
 						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
-						flexible >> 20, count, ppus);
+						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, count, ppus);
 				}
 			});
 
