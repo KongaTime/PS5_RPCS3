@@ -49,9 +49,7 @@
 #include <ps5platform/kernel.h>
 
 #include <condition_variable>
-#include <dirent.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #include <csignal>
 #include <ucontext.h>
 #include <cstdio>
@@ -86,92 +84,80 @@ namespace
 	// Every file and folder under path made readable and writable by all, and
 	// each folder searchable: what the title writes is otherwise the title's
 	// alone, and FTP could read config.yml but not replace or delete it
-	// (fs_move_failed, on my console). Returns how many it changed
-	usz open_to_ftp(const std::string& path)
+	// (fs_move_failed, on my console). Listed with fs::dir, as RPCS3 lists its
+	// folders: a walk with lstat found nothing (214b6a5, on my console).
+	// Returns how many it changed, and counts what it saw and what chmod refused
+	usz open_to_ftp(const std::string& path, usz& seen, usz& refused)
 	{
 		usz changed = 0;
-		DIR* const dir = ::opendir(path.c_str());
+		fs::dir dir(path);
 		if (!dir)
 		{
 			return 0;
 		}
 
-		while (const dirent* entry = ::readdir(dir))
+		for (const fs::dir_entry& entry : dir)
 		{
-			const std::string_view name = entry->d_name;
-			if (name == "." || name == "..")
+			if (entry.name == "." || entry.name == "..")
 			{
 				continue;
 			}
 
-			const std::string child = path + "/" + std::string(name);
-			struct ::stat st{};
-			if (::lstat(child.c_str(), &st) != 0)
-			{
-				continue;
-			}
-
-			const bool folder = S_ISDIR(st.st_mode);
-			const mode_t mode = folder ? 0777 : 0666;
-			if ((st.st_mode & 0777) != mode && ::chmod(child.c_str(), mode) == 0)
+			seen++;
+			const std::string child = path + "/" + entry.name;
+			if (::chmod(child.c_str(), entry.is_directory ? 0777 : 0666) == 0)
 			{
 				changed++;
 			}
-
-			if (folder)
+			else
 			{
-				changed += open_to_ftp(child);
+				refused++;
+			}
+
+			if (entry.is_directory)
+			{
+				changed += open_to_ftp(child, seen, refused);
 			}
 		}
 
-		::closedir(dir);
 		return changed;
 	}
 
 	// The compiled modules under path (<name>.obj.gz) that have no IR log
-	// beside them (<name>.obj.log), removed so they compile again and write one. Returns
-	// how many
+	// beside them (<name>.obj.log), removed so they compile again and write
+	// one. Returns how many
 	usz remove_objects_without_logs(const std::string& path)
 	{
 		usz removed = 0;
-		DIR* const dir = ::opendir(path.c_str());
+		fs::dir dir(path);
 		if (!dir)
 		{
 			return 0;
 		}
 
 		std::vector<std::string> objects;
-		while (const dirent* entry = ::readdir(dir))
+		for (const fs::dir_entry& entry : dir)
 		{
-			const std::string_view name = entry->d_name;
-			if (name == "." || name == "..")
+			if (entry.name == "." || entry.name == "..")
 			{
 				continue;
 			}
 
-			const std::string child = path + "/" + std::string(name);
-			struct ::stat st{};
-			if (::lstat(child.c_str(), &st) != 0)
-			{
-				continue;
-			}
-
-			if (S_ISDIR(st.st_mode))
+			const std::string child = path + "/" + entry.name;
+			if (entry.is_directory)
 			{
 				removed += remove_objects_without_logs(child);
 			}
-			else if (name.ends_with(".obj.gz"))
+			else if (entry.name.ends_with(".obj.gz"))
 			{
 				// Cached compressed (JITLLVM.cpp's ObjectCache); the log is <name>.obj.log
 				objects.push_back(child);
 			}
 		}
 
-		::closedir(dir);
-
 		for (const std::string& object : objects)
 		{
-			if (!fs::is_file(object.substr(0, object.size() - 3) + ".log") && ::unlink(object.c_str()) == 0)
+			if (!fs::is_file(object.substr(0, object.size() - 3) + ".log") && fs::remove_file(object))
 			{
 				removed++;
 			}
@@ -537,7 +523,9 @@ int run(const char* boot_path)
 	// What RPCS3 writes from here on is open to FTP (files 0666, folders 0777),
 	// and what earlier runs wrote is opened now
 	::umask(0);
-	trace("frontend: %u files and folders under /app0/rpcs3 opened to FTP", open_to_ftp("/app0/rpcs3"));
+	usz seen = 0, refused = 0;
+	const usz opened = open_to_ftp("/app0/rpcs3", seen, refused);
+	trace("frontend: /app0/rpcs3: %u files and folders, %u opened to FTP, %u refused (%s)", seen, opened, refused, refused ? fmt::format("errno %d", errno) : std::string("none"));
 
 	// The fault handler's readable copy of the title's code (Utilities/Thread.cpp)
 	if (ps5_load_code_copy("/app0/rpcs3-code.bin"))
