@@ -45,6 +45,9 @@
 #include "Emu/Cell/Modules/sceNp.h"
 #include "util/video_source.h"
 
+#include <ps5platform/heap.h>
+#include <ps5platform/kernel.h>
+
 #include <condition_variable>
 #include <csignal>
 #include <ucontext.h>
@@ -110,14 +113,24 @@ namespace
 				text = text.substr(0, std::min<usz>(text.find('\n'), 200));
 			}
 
+			// Errors and fatal ones beyond that, to a cap of their own: the
+			// warnings' cap hid how the home menu's setup run ended
 			static atomic_t<u32> s_traced = 0;
-			if (const u32 n = s_traced++; n < 6000)
+			static atomic_t<u32> s_errors = 0;
+			if (msg <= logs::level::error)
+			{
+				if (msg <= logs::level::fatal || s_errors++ < 4000)
+				{
+					trace("%s%s: %s", prefix, msg->name, text);
+				}
+			}
+			else if (const u32 n = s_traced++; n < 6000)
 			{
 				trace("%s%s: %s", prefix, msg->name, text);
 			}
 			else if (n == 6000)
 			{
-				trace("(the trace stops RPCS3's messages here: the rest is in /app0/rpcs3/cache/RPCS3.log)");
+				trace("(the trace stops RPCS3's warnings here, errors go on: the rest is in /app0/rpcs3/cache/RPCS3.log)");
 			}
 		}
 	};
@@ -556,7 +569,18 @@ int run(const char* boot_path)
 							fmt::append(ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
 						}
 					});
-					trace("status %ds: state %d, RSX flips %d, %d PPU threads:%s", seconds + 1, static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, count, ppus);
+					// And memory: the home menu's run ended at 205 s with no error of
+					// RPCS3's or signal (71d0fa2), as the kernel ends a title out of
+					// memory or after a GPU fault
+					struct ps5_heap_stats heap{};
+					ps5_heap_stats(&heap);
+					size_t flexible = 0, direct = 0;
+					int64_t direct_start = 0;
+					sceKernelAvailableFlexibleMemorySize(&flexible);
+					sceKernelAvailableDirectMemorySize(0, sceKernelGetDirectMemorySize(), 0x4000, &direct_start, &direct);
+					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; %d PPU threads:%s", seconds + 1,
+						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
+						flexible >> 20, count, ppus);
 				}
 			});
 
