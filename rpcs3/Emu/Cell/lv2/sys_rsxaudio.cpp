@@ -2198,7 +2198,15 @@ rsxaudio_periodic_tmr::wait_result rsxaudio_periodic_tmr::wait(const std::functi
 		int wait_status = 0;
 		do
 		{
+#ifdef __PROSPERO__
+			// PS5: the EVFILT_USER trigger that cancels this wait never woke it on
+			// my console (the stop for the PS3 home menu's reboot waited on this
+			// thread for good); waking every 100 ms lets the loop see the stop
+			static constexpr timespec wake_up{0, 100'000'000};
+			wait_status = kevent(kq, nullptr, 0, event, obj_wait_cnt, &wake_up);
+#else
 			wait_status = kevent(kq, nullptr, 0, event, obj_wait_cnt, nullptr);
+#endif
 		}
 		while (wait_status == -1 && errno == EINTR);
 

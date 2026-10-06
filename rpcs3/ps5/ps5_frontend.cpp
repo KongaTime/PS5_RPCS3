@@ -561,7 +561,20 @@ int run(const char* boot_path)
 			});
 
 			// Until the game stops and RPCS3 asks to quit
-			g_emu_callbacks.on_stop = []() { g_main.request_quit(); };
+			// A reboot the game asks for (sys_sm_shutdown, the home menu's after
+			// rebuilding its database) stops the emulator and then boots again
+			// from after_kill_callback: only a stop without one ends the title
+			g_emu_callbacks.on_stop = []()
+			{
+				if (!Emu.after_kill_callback)
+				{
+					g_main.request_quit();
+				}
+				else
+				{
+					trace("frontend: the game asked for a reboot");
+				}
+			};
 			g_main.run();
 		}
 	}
