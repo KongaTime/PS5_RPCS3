@@ -199,6 +199,26 @@ s32 lv2_socket_native::bind(const sys_net_sockaddr& addr)
 
 	auto error = get_last_error(false);
 
+#ifdef __PROSPERO__
+	// PS5: a title may not bind the wildcard address (EACCES); loopback it may.
+	// The PS3 home menu's libmtp binds 0.0.0.0:9309 in its module_start and,
+	// refused, left the system (SYS_PRX_NO_RESIDENT), while the menu called its
+	// exports later and ran into the code loaded where they had been (my
+	// console, an access violation at 0x80a90000). A socket the console's
+	// network cannot reach is the most it can have here
+	if (error == SYS_NET_EACCES && saddr == 0)
+	{
+		native_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		if (::bind(native_socket, reinterpret_cast<struct sockaddr*>(&native_addr), native_addr_len) == 0)
+		{
+			sys_net.warning("[Native] Bound %s:%d instead: the PS5 refuses the wildcard address", native_addr.sin_addr, std::bit_cast<be_t<u16>, u16>(native_addr.sin_port));
+			last_bound_addr = addr;
+			return CELL_OK;
+		}
+		error = get_last_error(false);
+	}
+#endif
+
 #ifdef __linux__
 	if (error == SYS_NET_EACCES && std::bit_cast<be_t<u16>, u16>(native_addr.sin_port) < 1024)
 	{
