@@ -266,6 +266,12 @@ struct MemoryManager1 : llvm::RTDyldMemoryManager
 		// utils::memory_decommit(m_data_ro_mems, how_much(data_ro_ptr));
 		// utils::memory_decommit(m_data_rw_mems, how_much(data_rw_ptr));
 		utils::memory_decommit(m_code_mems, c_max_size * 3, true);
+#ifdef __PROSPERO__
+		// PS5: no profiler reads jit_announce here, and the console's address
+		// space ran out after some 700 of these 768 MiB ranges (the PS3 home
+		// menu's first compile, on my console): the range goes back
+		utils::memory_release(m_code_mems, c_max_size * 3);
+#endif
 	}
 
 	llvm::JITSymbol findSymbol(const std::string& name) override

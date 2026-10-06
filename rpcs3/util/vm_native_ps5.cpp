@@ -137,22 +137,41 @@ namespace utils
 		}
 		else
 		{
-			// Anywhere means from 0x40_0000_0000 up, in order: the kernel's own
-			// choice was 0x8_0000_0000 to 0xA_0000_0000, where it then refused to
-			// commit memory (the JIT's code reservations, memory_commit EINVAL,
-			// on my console), as it had refused the guest's executable range
-			// there. The guest's ranges are at 0x10_0000_0000 and the title heap
-			// at 0x20_0000_0000 (ps5platform/heap.h)
+			// Anywhere means the first free place at 0x40_0000_0000 or above:
+			// the kernel's own choice was 0x8_0000_0000 to 0xA_0000_0000, where
+			// it then refused to commit memory (the JIT's code reservations,
+			// memory_commit EINVAL, on my console), as it had refused the
+			// guest's executable range there. The guest's ranges are at
+			// 0x10_0000_0000 and the title heap at 0x20_0000_0000
+			// (ps5platform/heap.h). Searched from the bottom each time, so a
+			// released range (the JIT's, as each compiler is destroyed) is used
+			// again: handed out in order, never reused, they ran out after some
+			// 700 of the JIT's 768 MiB
 			static std::mutex s_lock;
-			static u64 s_next = 0x40'0000'0000;
 			std::lock_guard lock(s_lock);
-			for (u32 tries = 0; tries < 256 && !base; tries++)
+			u64 at = 0x40'0000'0000;
+			for (u32 tries = 0; tries < 4096 && !base; tries++)
 			{
-				if (ps5_vrange_reserve_at(reinterpret_cast<void*>(s_next), size) == 0)
+				if (ps5_vrange_reserve_at(reinterpret_cast<void*>(at), size) == 0)
 				{
-					base = reinterpret_cast<void*>(s_next);
+					base = reinterpret_cast<void*>(at);
+					break;
 				}
-				s_next += utils::align<u64>(size, 0x1'0000'0000);
+
+				// Past what is taken here: the next range of our own, or the
+				// next 256 MiB where something else is
+				u64 next = at + 0x1000'0000;
+				{
+					std::lock_guard ranges_lock(g_ranges_lock);
+					for (const reserved_range& r : g_ranges)
+					{
+						if (at >= r.base && at - r.base < r.size)
+						{
+							next = utils::align<u64>(r.base + r.size, 0x10000);
+						}
+					}
+				}
+				at = std::max(next, at + 0x10000);
 			}
 
 			if (!base)
