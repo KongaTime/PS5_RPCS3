@@ -74,6 +74,31 @@ namespace utils
 		std::mutex g_ranges_lock;
 		std::vector<reserved_range> g_ranges;
 
+		// The shared-memory views shm::map placed, which memory_protect must
+		// never commit over, whatever the kernel's query says of them
+		std::vector<reserved_range> g_views;
+
+		bool is_view(u64 addr)
+		{
+			std::lock_guard lock(g_ranges_lock);
+			return std::any_of(g_views.begin(), g_views.end(), [&](const reserved_range& r)
+			{
+				return addr >= r.base && addr - r.base < r.size;
+			});
+		}
+
+		void add_view(void* base, u64 size)
+		{
+			std::lock_guard lock(g_ranges_lock);
+			g_views.push_back({reinterpret_cast<u64>(base), size});
+		}
+
+		void remove_view(void* base)
+		{
+			std::lock_guard lock(g_ranges_lock);
+			std::erase_if(g_views, [&](const reserved_range& r) { return r.base == reinterpret_cast<u64>(base); });
+		}
+
 		bool is_reserved(u64 addr)
 		{
 			std::lock_guard lock(g_ranges_lock);
@@ -178,7 +203,15 @@ namespace utils
 		// Mapping by mapping: memory already mapped (shared-memory views, committed
 		// units) changes protection in place with the kernel's own call (libc's
 		// mprotect refused the guest's memory views: EINVAL); reserved space that
-		// nothing backs yet is committed with that protection
+		// nothing backs yet is committed with that protection.
+		//
+		// Mapped memory is never committed over: the guest's memory is one
+		// shared object seen at g_base_addr and at its mirror g_sudo_addr, and
+		// fresh memory under one view parts it from the other (the PS3 home
+		// menu then read code bytes where a function descriptor had been
+		// written, on my console). A protection the kernel refuses there is
+		// widened instead, no access to read-only, then left as it was, and
+		// reported
 		const auto [page, bytes] = page_span(pointer, size);
 		const u64 end = reinterpret_cast<u64>(page) + bytes;
 
@@ -187,31 +220,47 @@ namespace utils
 			void* start = nullptr;
 			void* stop = nullptr;
 			u32 current = 0;
-			u64 next = at + ps5_page_size;
 
 			const s32 queried = sceKernelQueryMemoryProtection(reinterpret_cast<void*>(at), &start, &stop, &current);
-			s32 changed = 0x7fffffff;
-			if (queried == 0 && reinterpret_cast<u64>(start) <= at && reinterpret_cast<u64>(stop) > at)
+			const bool mapped = queried == 0 && reinterpret_cast<u64>(start) <= at && reinterpret_cast<u64>(stop) > at;
+			if (mapped || is_view(at))
 			{
-				next = std::min<u64>(end, reinterpret_cast<u64>(stop));
-				changed = sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(prot));
-				if (changed == 0)
+				// A view the query did not describe goes a page at a time
+				const u64 next = mapped ? std::min<u64>(end, reinterpret_cast<u64>(stop)) : at + ps5_page_size;
+				const s32 changed = sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(prot));
+				if (changed != 0)
 				{
-					at = next;
-					continue;
+					s32 widened = changed;
+					if (prot == protection::no)
+					{
+						widened = sceKernelMprotect(reinterpret_cast<void*>(at), next - at, kernel_protection(protection::ro));
+					}
+
+					static atomic_t<u32> s_reports = 0;
+					if (s_reports++ < 20)
+					{
+						vm_log.error("memory_protect(%p, 0x%x, %d): the kernel refused 0x%x on mapped memory at 0x%x-0x%x (prot 0x%x): 0x%x%s",
+							pointer, size, static_cast<int>(prot), kernel_protection(prot), at, next, current, static_cast<u32>(changed),
+							prot == protection::no ? (widened == 0 ? "; made read-only instead" : "; read-only refused too, left as it was") : "; left as it was");
+					}
 				}
+				at = next;
+				continue;
 			}
 
 			if (!is_reserved(at))
 			{
-				fmt::throw_exception("memory_protect(%p, 0x%x, %d): 0x%x is neither mapped nor reserved (query 0x%x: %p-%p prot 0x%x; mprotect 0x%x)",
-					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), start, stop, current, static_cast<u32>(changed));
+				fmt::throw_exception("memory_protect(%p, 0x%x, %d): 0x%x is neither mapped nor reserved (query 0x%x: %p-%p prot 0x%x)",
+					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), start, stop, current);
 			}
 
+			// Reserved and unbacked, a page at a time (the query says nothing of
+			// where the next mapping starts)
+			const u64 next = at + ps5_page_size;
 			if (const int result = ps5_vrange_commit(reinterpret_cast<void*>(at), next - at, ps5_protection(prot)); result != 0)
 			{
-				fmt::throw_exception("memory_protect(%p, 0x%x, %d) at 0x%x: query 0x%x (%p-%p prot 0x%x), mprotect 0x%x, then commit 0x%x",
-					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), start, stop, current, static_cast<u32>(changed), static_cast<u32>(result));
+				fmt::throw_exception("memory_protect(%p, 0x%x, %d) at 0x%x: query 0x%x, then commit 0x%x",
+					pointer, size, static_cast<int>(prot), at, static_cast<u32>(queried), static_cast<u32>(result));
 			}
 			at = next;
 		}
@@ -277,6 +326,8 @@ namespace utils
 			return nullptr;
 		}
 
+		add_view(view, m_size);
+
 		return static_cast<u8*>(view);
 	}
 
@@ -334,6 +385,7 @@ namespace utils
 
 	void shm::unmap(void* ptr) const
 	{
+		remove_view(ptr);
 		ps5_shm_unmap(ptr, m_size, 0);
 	}
 
@@ -341,6 +393,7 @@ namespace utils
 	{
 		// The view goes; its place stays reserved, a hole in the guest's layout
 		void* const target = reinterpret_cast<void*>(reinterpret_cast<u64>(ptr) & -0x10000);
+		remove_view(target);
 		ps5_shm_unmap(target, m_size, PS5_SHM_KEEP_RESERVED);
 	}
 
