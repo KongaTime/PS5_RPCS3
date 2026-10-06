@@ -664,6 +664,24 @@ int run(const char* boot_path)
 	}
 	trace("config: LLVM CPU %s", llvm_cpu.empty() ? std::string("(the host's)") : llvm_cpu);
 
+	// How many threads LLVM compiles on, from /app0/rpcs3-llvm-threads.txt
+	// (a number; none or 0, as many as the CPU has). With 16, SPU cache
+	// workers died in LLVM's post-RA scheduler on a memory operand pointer
+	// whose upper half read 0x2 for the heap's 0x20 (0bf22b6, on my console):
+	// one thread tells a race between the compile threads from a fault in one
+	u32 llvm_threads = 0;
+	if (fs::is_file("/app0/rpcs3-llvm-threads.txt"))
+	{
+		const std::string text = fs::file("/app0/rpcs3-llvm-threads.txt").to_string();
+		llvm_threads = static_cast<u32>(std::min<unsigned long>(std::strtoul(text.c_str(), nullptr, 10), 1024));
+	}
+	if (static_cast<u32>(g_cfg.core.llvm_threads) != llvm_threads)
+	{
+		g_cfg.core.llvm_threads.set(llvm_threads);
+		Emulator::SaveSettings(g_cfg.to_string(), "");
+	}
+	trace("config: LLVM compile threads %s", llvm_threads ? std::to_string(llvm_threads) : std::string("(as many as the CPU has)"));
+
 	// LLVM's logs, where /app0/rpcs3-llvm-logs.txt asks for them: each PPU
 	// module's IR beside its object (<name>.obj.log), to compile the same IR on
 	// a PC and compare the code. Modules cached without one are removed, so
