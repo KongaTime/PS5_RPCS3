@@ -25,6 +25,17 @@ namespace rsx::overlays
 		big_picture_game_info info;
 		std::unique_ptr<image_info> icon;       // ICON0.PNG
 		std::unique_ptr<image_info> background; // PIC1.PNG, if the game has one
+
+		// The Library's cover: the player's own (config/covers/<serial>.png or
+		// .jpg), else one drawn from the game's art
+		std::unique_ptr<image_info> cover_file;
+		std::vector<u8> cover_pixels;
+		std::unique_ptr<memory_image_info> cover_drawn;
+
+		const image_info_base* cover() const
+		{
+			return cover_file ? static_cast<const image_info_base*>(cover_file.get()) : cover_drawn.get();
+		}
 	};
 
 	struct ps5_launcher_dialog : public user_interface
@@ -88,7 +99,6 @@ namespace rsx::overlays
 		s32 m_first_visible = 0;
 
 		// The page shown on the Library and Settings tabs
-		std::shared_ptr<home_menu_page> m_library;
 		std::shared_ptr<home_menu_page> m_settings;
 
 		// Background: the selected game's art over the last one's while it fades
@@ -196,6 +206,15 @@ namespace rsx::overlays
 		void close_game_settings();
 		void layout_game_settings();
 		void handle_game_settings(pad_button button_press);
+
+		// The Library: the covers in a row that slides to the selection
+		f32 m_flow_pos = 0.f;
+		u64 m_last_update_us = 0;
+		image_view m_library_art;
+		std::vector<u8> m_glow_pixels;
+		std::unique_ptr<memory_image_info> m_glow_image;
+		void handle_library(pad_button button_press);
+		void compile_library(compiled_resource& result);
 
 		animation_color_interpolate m_fade_animation{};
 
