@@ -1451,6 +1451,21 @@ static void ppu_check_patch_spu_images(const ppu_module<lv2_obj>& mod, const ppu
 
 		fmt::append(dump, " (image addr: 0x%x, size: 0x%x)", seg.addr + prefix_addr, obj.highest_offset);
 
+		// PS5 fork: programs some games' SPU code needs accurate xfloat for
+		// (SPULLVMRecompiler.cpp, spu_note_program_image)
+		if (!is_firmware && _main == &mod && !name.empty())
+		{
+			extern void spu_note_program_image(std::string_view name, u32 vaddr, const void* data, u32 size);
+
+			for (const auto& prog : obj.progs)
+			{
+				if (prog.p_type == 0x1u /* LOAD */ && prog.p_filesz > 0u)
+				{
+					spu_note_program_image(name, prog.p_vaddr, elf_header + prog.p_offset, prog.p_filesz);
+				}
+			}
+		}
+
 		sha1_finish(&sha2, sha1_hash);
 
 		// Format patch name
