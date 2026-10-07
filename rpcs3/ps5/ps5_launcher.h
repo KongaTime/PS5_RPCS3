@@ -52,6 +52,18 @@ namespace rsx::overlays
 		{
 			return back_file ? static_cast<const image_info_base*>(back_file.get()) : back_drawn.get();
 		}
+
+		// The case's spine: the player's own (<serial>-spine.png or .jpg), else
+		// one drawn with the game's name down it
+		std::unique_ptr<image_info> spine_file;
+		std::vector<u8> spine_pixels;
+		std::unique_ptr<memory_image_info> spine_drawn;
+		f32 spine_crop[4]{0.f, 1.f, 0.f, 1.f};
+
+		const image_info_base* spine() const
+		{
+			return spine_file ? static_cast<const image_info_base*>(spine_file.get()) : spine_drawn.get();
+		}
 	};
 
 	struct ps5_launcher_dialog : public user_interface

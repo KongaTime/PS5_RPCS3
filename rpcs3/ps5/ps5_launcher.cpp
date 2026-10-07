@@ -469,6 +469,135 @@ namespace rsx::overlays
 			game.back_drawn->dirty = true;
 		}
 
+		// A spine drawn for the case: a black band with "PS3" at the top, then
+		// the game's name down it in the cover's own colour (its left edge's),
+		// as a PS3 spine is laid out. Text by stb_truetype, with the title's
+		// Inter Bold
+		void draw_spine(ps5_launcher_game& game, const std::vector<u8>& font_data)
+		{
+			constexpr u16 sw = 52, sh = 560;
+			constexpr u16 band = 70;
+			std::vector<u8>& px = game.spine_pixels;
+			px.assign(usz{sw} * sh * 4, 255);
+
+			// The colour of the cover's left edge
+			f32 edge[3] = {40.f, 60.f, 120.f};
+			if (const image_info_base* cover = game.cover(); cover && cover->get_data())
+			{
+				f64 sum[3]{};
+				int n = 0;
+				const int x0 = static_cast<int>(game.cover_crop[0] * cover->w);
+				const int x1 = std::max(x0 + 1, static_cast<int>((game.cover_crop[0] + 0.05f * (game.cover_crop[1] - game.cover_crop[0])) * cover->w));
+				const int y0 = static_cast<int>((game.cover_crop[2] + 0.15f * (game.cover_crop[3] - game.cover_crop[2])) * cover->h);
+				const int y1 = static_cast<int>(game.cover_crop[3] * cover->h);
+				for (int y = y0; y < y1; y += 3)
+				{
+					for (int x = x0; x < x1; x++)
+					{
+						const u8* p = cover->get_data() + (static_cast<usz>(y) * cover->w + x) * 4;
+						for (int c = 0; c < 3; c++) sum[c] += p[c];
+						n++;
+					}
+				}
+				if (n)
+				{
+					for (int c = 0; c < 3; c++) edge[c] = static_cast<f32>(sum[c] / n);
+				}
+			}
+			const bool light = 0.299f * edge[0] + 0.587f * edge[1] + 0.114f * edge[2] > 150.f;
+
+			for (u16 y = 0; y < sh; y++)
+			{
+				for (u16 x = 0; x < sw; x++)
+				{
+					u8* out = &px[(usz{y} * sw + x) * 4];
+					if (y < band) { out[0] = 10; out[1] = 10; out[2] = 12; }
+					else if (y < band + 3) { out[0] = 200; out[1] = 36; out[2] = 44; }
+					else
+					{
+						// A little shading across, as print on a curved spine
+						const f32 shade = 0.9f + 0.1f * std::sin(3.14159f * (x + 0.5f) / sw);
+						for (int c = 0; c < 3; c++) out[c] = static_cast<u8>(std::clamp(edge[c] * shade, 0.f, 255.f));
+					}
+					out[3] = 255;
+				}
+			}
+
+			// Text, turned to read down the spine with its letters' tops toward
+			// the front
+			const auto write = [&](std::string_view text, f32 pixel_height, int v0, int v_max, const u8 colour[3])
+			{
+				stbtt_fontinfo font;
+				if (font_data.empty() || !stbtt_InitFont(&font, font_data.data(), stbtt_GetFontOffsetForIndex(font_data.data(), 0)))
+				{
+					return;
+				}
+				const std::u32string chars = utf8_to_u32string(text);
+				f32 scale = stbtt_ScaleForPixelHeight(&font, pixel_height);
+				int ascent, descent, gap;
+				stbtt_GetFontVMetrics(&font, &ascent, &descent, &gap);
+
+				const auto measure = [&](f32 s)
+				{
+					f32 w = 0.f;
+					for (usz i = 0; i < chars.size(); i++)
+					{
+						int advance, bearing;
+						stbtt_GetCodepointHMetrics(&font, chars[i], &advance, &bearing);
+						w += advance * s;
+						if (i + 1 < chars.size()) w += stbtt_GetCodepointKernAdvance(&font, chars[i], chars[i + 1]) * s;
+					}
+					return w;
+				};
+				// Shrunk to fit the spine's length
+				if (const f32 w = measure(scale); w > v_max - v0)
+				{
+					scale *= (v_max - v0) / w;
+				}
+				const int th = static_cast<int>(std::ceil((ascent - descent) * scale));
+				const int tw = static_cast<int>(std::ceil(measure(scale))) + 2;
+				std::vector<u8> mask(static_cast<usz>(tw) * th, 0);
+				f32 pen = 0.f;
+				const int baseline = static_cast<int>(ascent * scale);
+				for (usz i = 0; i < chars.size(); i++)
+				{
+					int x0, y0, x1, y1;
+					stbtt_GetCodepointBitmapBox(&font, chars[i], scale, scale, &x0, &y0, &x1, &y1);
+					const int gx = static_cast<int>(pen) + x0, gy = baseline + y0;
+					if (x1 > x0 && y1 > y0 && gx >= 0 && gy >= 0 && gx + (x1 - x0) <= tw && gy + (y1 - y0) <= th)
+					{
+						stbtt_MakeCodepointBitmap(&font, &mask[static_cast<usz>(gy) * tw + gx], x1 - x0, y1 - y0, tw, scale, scale, chars[i]);
+					}
+					int advance, bearing;
+					stbtt_GetCodepointHMetrics(&font, chars[i], &advance, &bearing);
+					pen += advance * scale;
+					if (i + 1 < chars.size()) pen += stbtt_GetCodepointKernAdvance(&font, chars[i], chars[i + 1]) * scale;
+				}
+
+				// Turned a quarter clockwise, centred across the spine
+				const int u0 = (sw - th) / 2;
+				for (int ty = 0; ty < th; ty++)
+				{
+					for (int tx = 0; tx < tw; tx++)
+					{
+						const u8 a = mask[static_cast<usz>(ty) * tw + tx];
+						const int u = u0 + (th - 1 - ty), v = v0 + tx;
+						if (!a || u < 0 || u >= sw || v < 0 || v >= sh) continue;
+						u8* out = &px[(static_cast<usz>(v) * sw + u) * 4];
+						for (int c = 0; c < 3; c++) out[c] = static_cast<u8>((colour[c] * a + out[c] * (255 - a)) / 255);
+					}
+				}
+			};
+
+			const u8 white[3] = {245, 245, 245};
+			const u8 dark[3] = {16, 18, 26};
+			write("PS3", 30.f, 12, band - 8, white);
+			write(game.info.name.empty() ? game.info.serial : game.info.name, 26.f, band + 20, sh - 16, light ? dark : white);
+
+			game.spine_drawn = std::make_unique<memory_image_info>(sw, sh, u8{4}, px.data());
+			game.spine_drawn->dirty = true;
+		}
+
 		// Where an image is not transparent, as (u0, u1, v0, v1)
 		void opaque_bounds(const image_info_base& image, f32 crop[4])
 		{
@@ -525,6 +654,14 @@ namespace rsx::overlays
 						break;
 					}
 				}
+				for (const char* suffix : {"-spine", "_spine", " spine"})
+				{
+					if ((game.spine_file = load_any(base + suffix)))
+					{
+						opaque_bounds(*game.spine_file, game.spine_crop);
+						break;
+					}
+				}
 			}
 			if (!game.cover_file)
 			{
@@ -533,6 +670,19 @@ namespace rsx::overlays
 			if (!game.back_file)
 			{
 				draw_back(game);
+			}
+			if (!game.spine_file)
+			{
+				static const std::vector<u8> font = []
+				{
+					std::vector<u8> bytes;
+					if (fs::file file{"/app0/assets/fonts/Inter-Bold.ttf"})
+					{
+						file.read(bytes, file.size());
+					}
+					return bytes;
+				}();
+				draw_spine(game, font);
 			}
 		}
 
@@ -1944,15 +2094,21 @@ namespace rsx::overlays
 
 	namespace
 	{
-		// The Library's 3D: covers are PS3 cases (a box 1 wide, 1.16 high and
-		// 0.1 deep), turned and placed in a space whose origin is the row's
-		// middle, seen through a pinhole at `c_focal` in front of the screen
+		// The Library's 3D: covers are PS3 cases, turned and placed in a space
+		// whose origin is the row's middle, seen through a pinhole at `c_focal`
+		// in front of the screen. A case is 135 x 170 x 14 mm with rounded
+		// corners; its cover sits under the clear front 3 mm in from the sides
+		// and foot and 14 mm down from the top, where the plastic is clear
 		constexpr f32 c_focal = 1100.f;
 		constexpr f32 c_row_mid_x = 640.f;
-		constexpr f32 c_row_mid_y = 330.f;
-		constexpr f32 c_case_w = 290.f;
-		constexpr f32 c_case_aspect = 1.156f;
-		constexpr f32 c_case_depth = 0.075f;
+		constexpr f32 c_row_mid_y = 322.f;
+		constexpr f32 c_case_w = 268.f;
+		constexpr f32 c_case_h = c_case_w * 170.f / 135.f;
+		constexpr f32 c_case_d = c_case_w * 14.f / 135.f;
+		constexpr f32 c_case_r = c_case_w * 4.5f / 135.f;     // corner radius
+		constexpr f32 c_insert_side = c_case_w * 3.f / 135.f;
+		constexpr f32 c_insert_top = c_case_w * 14.f / 135.f;
+		constexpr f32 c_insert_foot = c_case_w * 3.f / 135.f;
 		constexpr f32 c_deg = 3.14159265f / 180.f;
 
 		struct vec3
@@ -1968,8 +2124,8 @@ namespace rsx::overlays
 		struct case_pose
 		{
 			vec3 at{};
-			f32 yaw = 0.f;   // about the vertical axis, + turns its right edge away
-			f32 pitch = 0.f; // about the horizontal axis, + tips its top away
+			f32 yaw = 0.f;   // about the vertical axis
+			f32 pitch = 0.f; // about the horizontal axis
 			f32 scale = 1.f;
 			f32 alpha = 1.f;
 			bool mirrored = false; // its reflection in the floor
@@ -2002,37 +2158,42 @@ namespace rsx::overlays
 			y = c_row_mid_y + p.y * k;
 		}
 
-		// One face of a case: a corner and two edges, in the case's own space
-		enum class face_kind : u8
+		// Half the case's width at height y: narrower in the rounded corners
+		f32 case_half_width(f32 y)
 		{
-			plastic,
-			front,
-			back,
-			spine,
+			const f32 into = std::max(0.f, std::abs(y) - (c_case_h / 2 - c_case_r));
+			return c_case_w / 2 - (c_case_r - std::sqrt(std::max(0.f, c_case_r * c_case_r - into * into)));
+		}
+
+		// The case's outline, clockwise from the top of its left side, as
+		// points with their outward normals; each corner in `steps` pieces
+		struct outline_point
+		{
+			f32 x, y, nx, ny;
 		};
 
-		struct case_face
+		std::vector<outline_point> case_outline(int steps)
 		{
-			vec3 origin, edge_a, edge_b, normal;
-			face_kind kind;
-		};
-
-		std::vector<case_face> case_faces()
-		{
-			const f32 w = c_case_w, h = c_case_w * c_case_aspect, d = c_case_w * c_case_depth;
-			return
+			std::vector<outline_point> points;
+			const f32 ix = c_case_w / 2 - c_case_r, iy = c_case_h / 2 - c_case_r;
+			// Corner centres, and the angle each corner's arc starts at
+			const struct { f32 cx, cy, start; } corners[] =
 			{
-				// Front: the cover
-				{{-w / 2, -h / 2, -d / 2}, {w, 0, 0}, {0, h, 0}, {0, 0, -1}, face_kind::front},
-				// Back: seen from behind, its left is the case's right
-				{{w / 2, -h / 2, d / 2}, {-w, 0, 0}, {0, h, 0}, {0, 0, 1}, face_kind::back},
-				// Spine (left): the cover's edge wraps round it
-				{{-w / 2, -h / 2, d / 2}, {0, 0, -d}, {0, h, 0}, {-1, 0, 0}, face_kind::spine},
-				// The opening edge, top and bottom: clear plastic
-				{{w / 2, -h / 2, -d / 2}, {0, 0, d}, {0, h, 0}, {1, 0, 0}, face_kind::plastic},
-				{{-w / 2, -h / 2, d / 2}, {w, 0, 0}, {0, 0, -d}, {0, -1, 0}, face_kind::plastic},
-				{{-w / 2, h / 2, -d / 2}, {w, 0, 0}, {0, 0, d}, {0, 1, 0}, face_kind::plastic},
+				{-ix, -iy, 180.f}, // top left: from the left side round to the top
+				{ix, -iy, 270.f},  // top right
+				{ix, iy, 0.f},     // bottom right
+				{-ix, iy, 90.f},   // bottom left
 			};
+			for (const auto& corner : corners)
+			{
+				for (int s = 0; s <= steps; s++)
+				{
+					const f32 angle = (corner.start + 90.f * s / steps) * c_deg;
+					const f32 nx = std::cos(angle), ny = std::sin(angle);
+					points.push_back({corner.cx + nx * c_case_r, corner.cy + ny * c_case_r, nx, ny});
+				}
+			}
+			return points;
 		}
 
 		// Light from the front, above and a little left
@@ -2157,8 +2318,7 @@ namespace rsx::overlays
 		glow(640, 320, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.45f));
 
 		const f32 detail = m_detail_t * m_detail_t * (3.f - 2.f * m_detail_t);
-		const f32 case_h = c_case_w * c_case_aspect;
-		const f32 floor_y = case_h / 2.f + 6.f;
+		const f32 floor_y = c_case_h / 2.f + 6.f;
 
 		glow(static_cast<s16>(640 - 330 * detail), static_cast<s16>(c_row_mid_y + floor_y + 10), 640, 150, color4f(c_accent.r, c_accent.g, c_accent.b, 0.22f));
 
@@ -2204,11 +2364,11 @@ namespace rsx::overlays
 			return pose;
 		};
 
-		const std::vector<case_face> faces = case_faces();
-
-		// A face as one triangle strip over a grid (rows joined by repeated
-		// vertices), fine enough that the texture follows the perspective
-		const auto add_face = [&](const image_info_base* image, const f32 uv[4], const case_pose& pose, const case_face& face, int cols, int rows, f32 b0, f32 b1, const color4f& color)
+		// A patch of a case's surface as one triangle strip over a grid (rows
+		// joined by repeated vertices), fine enough that the texture follows the
+		// perspective. `at(a, b)` gives the local point at grid position (a, b)
+		// in 0..1; the texture spans uv over the patch
+		const auto add_patch = [&](const image_info_base* image, const f32 uv[4], const case_pose& pose, int cols, int rows, f32 b0, f32 b1, const color4f& color, const auto& at)
 		{
 			compiled_resource::command cmd;
 			if (image)
@@ -2222,9 +2382,8 @@ namespace rsx::overlays
 
 			const auto point = [&](f32 a, f32 b)
 			{
-				const vec3 local = face.origin + face.edge_a * a + face.edge_b * b;
 				f32 x, y;
-				project(to_world(pose, local), x, y);
+				project(to_world(pose, at(a, b)), x, y);
 				vertex v;
 				v.vec4(x, y, uv[0] + (uv[1] - uv[0]) * a, uv[2] + (uv[3] - uv[2]) * b);
 				return v;
@@ -2236,7 +2395,6 @@ namespace rsx::overlays
 				const f32 bb = b0 + (b1 - b0) * (r + 1) / rows;
 				if (r > 0)
 				{
-					// Join the rows with two degenerate triangles
 					cmd.verts.push_back(cmd.verts.back());
 					cmd.verts.push_back(point(0.f, bt));
 				}
@@ -2253,19 +2411,162 @@ namespace rsx::overlays
 			result.add(part);
 		};
 
-		const auto facing = [&](const case_pose& pose, const case_face& face)
+		const auto facing = [&](const case_pose& pose, vec3 normal, vec3 local)
 		{
-			// Seen when it faces the eye (at the origin's front, -focal on z)
-			const vec3 n = turn(pose, face.normal);
-			const vec3 p = to_world(pose, face.origin + face.edge_a * 0.5f + face.edge_b * 0.5f);
-			const vec3 eye_to = {p.x, p.y, p.z + c_focal};
-			return dot(pose.mirrored ? vec3{n.x, -n.y, n.z} : n, eye_to) < 0.f;
+			// Seen when it faces the eye (at -focal on z)
+			vec3 n = turn(pose, normal);
+			if (pose.mirrored) n.y = -n.y;
+			const vec3 p = to_world(pose, local);
+			return dot(n, vec3{p.x, p.y, p.z + c_focal}) < 0.f;
 		};
 
-		const auto lit = [&](const case_pose& pose, const case_face& face) -> f32
+		const auto lit = [&](const case_pose& pose, vec3 normal) -> f32
 		{
-			const vec3 n = turn(pose, face.normal);
-			return 0.4f + 0.6f * std::max(0.f, dot(n, c_light));
+			return 0.42f + 0.58f * std::max(0.f, dot(turn(pose, normal), c_light));
+		};
+
+		// The case's plastic: a pale grey, lit; the cover's ink: lit, a little
+		const auto plastic = [](f32 shade, f32 alpha) { return color4f(0.5f + 0.36f * shade, 0.53f + 0.36f * shade, 0.6f + 0.36f * shade, alpha); };
+		const auto ink = [](f32 shade, f32 alpha) { const f32 s = 0.35f + 0.65f * shade; return color4f(s, s, s, alpha); };
+
+		// The front or back of a case: its rounded plastic, the cover under it,
+		// and the sheen over both. `side` is -1 for the front, +1 for the back
+		// (seen from behind, so its left is the case's right)
+		const auto add_side = [&](const ps5_launcher_game& game, const case_pose& pose, f32 side, int detail_level, f32 alpha, f32 b0, f32 b1)
+		{
+			const vec3 normal{0.f, 0.f, side};
+			const f32 z = side * c_case_d / 2.f;
+			const f32 shade = lit(pose, normal);
+			const f32 flip = -side; // +1: a runs left to right across the case
+
+			// The plastic: rows spaced finer toward the rounded ends
+			const auto tray = [&](f32 a, f32 b)
+			{
+				const f32 t = (1.f - std::cos(3.14159265f * b)) / 2.f;
+				const f32 y = -c_case_h / 2 + c_case_h * t;
+				const f32 hw = case_half_width(y);
+				return vec3{flip * (-hw + 2.f * hw * a), y, z};
+			};
+			static constexpr f32 whole[4] = {0.f, 1.f, 0.f, 1.f};
+			add_patch(nullptr, whole, pose, 1, detail_level, b0, b1, plastic(shade, alpha), tray);
+
+			// The cover, under the clear front
+			const image_info_base* image = side < 0.f ? game.cover() : game.back();
+			const f32* crop = side < 0.f ? game.cover_crop : game.back_crop;
+			const f32 top = -c_case_h / 2 + c_insert_top;
+			const f32 foot = c_case_h / 2 - c_insert_foot;
+			const auto insert = [&](f32 a, f32 b)
+			{
+				const f32 half = c_case_w / 2 - c_insert_side;
+				return vec3{flip * (-half + 2.f * half * a), top + (foot - top) * b, z + side * 0.4f};
+			};
+			// The cover's rows that fall in [b0, b1] of the case's height
+			const f32 cb0 = std::clamp((std::lerp(-c_case_h / 2, c_case_h / 2, b0) - top) / (foot - top), 0.f, 1.f);
+			const f32 cb1 = std::clamp((std::lerp(-c_case_h / 2, c_case_h / 2, b1) - top) / (foot - top), 0.f, 1.f);
+			if (cb1 > cb0)
+			{
+				const f32 uv[4] = {crop[0], crop[1], crop[2] + (crop[3] - crop[2]) * cb0, crop[2] + (crop[3] - crop[2]) * cb1};
+				const auto part = [&](f32 a, f32 b) { return insert(a, cb0 + (cb1 - cb0) * b); };
+				add_patch(image, uv, pose, detail_level, std::max(1, static_cast<int>(detail_level * (cb1 - cb0))), 0.f, 1.f, ink(shade, alpha), part);
+			}
+
+			// The sheen, sliding across as the case turns
+			if (m_sheen_image && !pose.mirrored)
+			{
+				const f32 slide = std::clamp(-pose.yaw * 0.55f + pose.pitch * 0.3f, -0.6f, 0.6f) + (side > 0.f ? 0.25f : 0.f);
+				const f32 sheen_uv[4] = {slide, slide + 1.f, 0.f, 1.f};
+				const auto gloss = [&](f32 a, f32 b) { vec3 p = tray(a, b); p.z += side * 0.8f; return p; };
+				add_patch(m_sheen_image.get(), sheen_uv, pose, detail_level, detail_level, 0.f, 1.f, color4f(1.f, 1.f, 1.f, 0.2f * alpha), gloss);
+			}
+		};
+
+		// The case's rim: its rounded sides, plastic, but the spine (the left
+		// side) carries the spine's print between the top band and the foot
+		const auto add_rim = [&](const ps5_launcher_game& game, const case_pose& pose, int steps, f32 alpha)
+		{
+			const std::vector<outline_point> outline = case_outline(steps);
+			const usz count = outline.size();
+			static constexpr f32 whole[4] = {0.f, 1.f, 0.f, 1.f};
+			const f32 half_d = c_case_d / 2.f;
+
+			for (usz i = 0; i < count; i++)
+			{
+				const outline_point& p0 = outline[i];
+				const outline_point& p1 = outline[(i + 1) % count];
+				const f32 nx = (p0.nx + p1.nx) / 2.f, ny = (p0.ny + p1.ny) / 2.f;
+				const f32 length = std::sqrt(nx * nx + ny * ny);
+				if (length < 1e-4f) continue;
+				const vec3 normal{nx / length, ny / length, 0.f};
+				const vec3 middle{(p0.x + p1.x) / 2.f, (p0.y + p1.y) / 2.f, 0.f};
+				if (!facing(pose, normal, middle) || (pose.mirrored && normal.y != 0.f && std::abs(normal.y) > 0.7f))
+				{
+					continue;
+				}
+				const f32 shade = lit(pose, normal);
+
+				// Along the segment (a), back to front (b)
+				const auto wall = [&](f32 y0, f32 y1)
+				{
+					return [&, y0, y1](f32 a, f32 b)
+					{
+						const f32 x = p0.x + (p1.x - p0.x) * a;
+						const f32 y = y0 + (y1 - y0) * a;
+						return vec3{x, y, half_d - 2.f * half_d * b};
+					};
+				};
+
+				const bool spine = i + 1 == count; // from the bottom-left corner's end up to the top-left's start
+				if (!spine)
+				{
+					add_patch(nullptr, whole, pose, 1, 1, 0.f, 1.f, plastic(shade, alpha), wall(p0.y, p1.y));
+					continue;
+				}
+
+				// The spine runs up from the foot (p0) to the top (p1): plastic,
+				// then the print from the foot to the top band, then plastic
+				const f32 print_foot = c_case_h / 2 - c_case_r;
+				const f32 print_top = -c_case_h / 2 + c_insert_top;
+				add_patch(nullptr, whole, pose, 1, 1, 0.f, 1.f, plastic(shade, alpha), wall(p0.y, print_foot));
+				add_patch(nullptr, whole, pose, 1, 1, 0.f, 1.f, plastic(shade, alpha), wall(print_top, p1.y));
+				if (const image_info_base* print = game.spine())
+				{
+					// The print's top is at print_top: v runs down it; u runs
+					// across from the back (0) to the front (1)
+					const auto strip = [&](f32 a, f32 b)
+					{
+						const f32 y = print_top + (print_foot - print_top) * a;
+						return vec3{-c_case_w / 2 - 0.4f, y, half_d - 2.f * half_d * b};
+					};
+					// Grid: a down the spine, b across it; the texture's u is
+					// across (b) and v down (a), so swap them in the uv
+					compiled_resource::command cmd;
+					cmd.config.set_image_resource(image_resource_id::raw_image);
+					cmd.config.external_data_ref = print;
+					cmd.config.color = ink(shade, alpha);
+					cmd.config.primitives = primitive_type::triangle_strip;
+					cmd.config.disable_vertex_snap = true;
+					constexpr int rows = 10;
+					for (int r = 0; r <= rows; r++)
+					{
+						const f32 a = static_cast<f32>(r) / rows;
+						for (const f32 b : {0.f, 1.f})
+						{
+							f32 x, y;
+							project(to_world(pose, strip(a, b)), x, y);
+							vertex v;
+							v.vec4(x, y, game.spine_crop[0] + (game.spine_crop[1] - game.spine_crop[0]) * b, game.spine_crop[2] + (game.spine_crop[3] - game.spine_crop[2]) * a);
+							cmd.verts.push_back(v);
+						}
+					}
+					compiled_resource part;
+					part.append(cmd);
+					result.add(part);
+				}
+				else
+				{
+					add_patch(nullptr, whole, pose, 1, 1, 0.f, 1.f, plastic(shade, alpha), wall(print_foot, print_top));
+				}
+			}
 		};
 
 		// Far ones first, the selected one last
@@ -2287,84 +2588,41 @@ namespace rsx::overlays
 		for (const s32 i : order)
 		{
 			const ps5_launcher_game& game = m_games[i];
-			case_pose pose = pose_of(i);
+			const case_pose pose = pose_of(i);
 			if (pose.alpha <= 0.f)
 			{
 				continue;
 			}
 			const bool near_middle = std::abs(i - m_flow_pos) < 1.5f;
-			const int cols = near_middle ? 14 : 8;
+			const int grid = near_middle ? 16 : 8;
+			const int steps = near_middle ? 4 : 2;
 
-			// What each face shows, and from which part of its image
-			const f32 spine_uv[4] = {game.cover_crop[0], game.cover_crop[0] + 0.03f * (game.cover_crop[1] - game.cover_crop[0]), game.cover_crop[2], game.cover_crop[3]};
-			const auto image_of = [&](const case_face& face, const f32*& uv) -> const image_info_base*
-			{
-				switch (face.kind)
-				{
-				case face_kind::front: uv = game.cover_crop; return game.cover();
-				case face_kind::back: uv = game.back_crop; return game.back();
-				case face_kind::spine: uv = spine_uv; return game.cover();
-				default: uv = spine_uv; return nullptr;
-				}
-			};
-			const auto colour_of = [&](const case_face& face, f32 shade, f32 alpha) -> color4f
-			{
-				if (face.kind == face_kind::plastic)
-				{
-					// Clear plastic: pale and see-through, brighter in the light
-					return color4f(0.55f + 0.4f * shade, 0.62f + 0.36f * shade, 0.8f + 0.2f * shade, 0.55f * alpha);
-				}
-				const f32 s = face.kind == face_kind::spine ? shade * 0.8f : shade;
-				return color4f(s, s, s, alpha);
-			};
-
-			// Its reflection: the faces toward us, mirrored in the floor and
+			// Its reflection: the side facing us, mirrored in the floor and
 			// fading downward in bands (only the case's foot shows)
 			case_pose mirror = pose;
 			mirror.mirrored = true;
-			for (const case_face& face : faces)
+			for (const f32 side : {-1.f, 1.f})
 			{
-				if (!facing(mirror, face) || face.normal.y != 0.f)
+				if (!facing(mirror, vec3{0.f, 0.f, side}, vec3{0.f, 0.f, side * c_case_d / 2.f}))
 				{
 					continue;
 				}
-				const f32* uv = nullptr;
-				const image_info_base* image = image_of(face, uv);
-				const f32 shade = lit(pose, face);
 				constexpr int bands = 5;
 				for (int b = 0; b < bands; b++)
 				{
-					const f32 f0 = 1.f - 0.32f * b / bands;
-					const f32 f1 = 1.f - 0.32f * (b + 1) / bands;
-					const f32 fade = 0.24f * (1.f - (b + 0.5f) / bands);
-					add_face(image, uv, mirror, face, face.kind == face_kind::front || face.kind == face_kind::back ? cols : 1, 1, f1, f0, colour_of(face, shade, fade * pose.alpha));
+					const f32 f0 = 1.f - 0.3f * b / bands;
+					const f32 f1 = 1.f - 0.3f * (b + 1) / bands;
+					add_side(game, mirror, side, 1, 0.24f * (1.f - (b + 0.5f) / bands) * pose.alpha, f1, f0);
 				}
 			}
 
-			// The case: its back faces first, so the clear edges show what is
-			// behind them
-			for (int pass = 0; pass < 2; pass++)
+			// The case: its rim, then the side facing us
+			add_rim(game, pose, steps, pose.alpha);
+			for (const f32 side : {-1.f, 1.f})
 			{
-				for (const case_face& face : faces)
+				if (facing(pose, vec3{0.f, 0.f, side}, vec3{0.f, 0.f, side * c_case_d / 2.f}))
 				{
-					if (!facing(pose, face) || (face.kind == face_kind::plastic) != (pass == 1))
-					{
-						continue;
-					}
-					const f32* uv = nullptr;
-					const image_info_base* image = image_of(face, uv);
-					const f32 shade = lit(pose, face);
-					const bool big = face.kind == face_kind::front || face.kind == face_kind::back;
-					add_face(image, uv, pose, face, big ? cols : 1, big ? cols : 6, 0.f, 1.f, colour_of(face, shade, pose.alpha));
-
-					// The sheen: a band of light across the cover, sliding as the
-					// case turns
-					if (big && m_sheen_image)
-					{
-						const f32 slide = std::clamp(-pose.yaw * 0.55f + pose.pitch * 0.3f, -0.6f, 0.6f) + (face.kind == face_kind::back ? 0.25f : 0.f);
-						const f32 sheen_uv[4] = {slide, slide + 1.f, 0.f, 1.f};
-						add_face(m_sheen_image.get(), sheen_uv, pose, face, cols, cols, 0.f, 1.f, color4f(1.f, 1.f, 1.f, (near_middle ? 0.22f : 0.12f) * pose.alpha));
-					}
+					add_side(game, pose, side, grid, pose.alpha, 0.f, 1.f);
 				}
 			}
 		}
