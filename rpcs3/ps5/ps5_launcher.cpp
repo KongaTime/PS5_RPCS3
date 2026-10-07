@@ -16,6 +16,7 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
+#include "Utilities/Config.h"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/Thread.h"
@@ -25,6 +26,8 @@
 #include <cmath>
 
 LOG_CHANNEL(launcher_log, "Launcher");
+
+extern std::string g_cfg_defaults; // Emu/System.cpp: the config's defaults, as text
 
 namespace rsx::overlays
 {
@@ -575,7 +578,13 @@ namespace rsx::overlays
 	{
 		// Right-aligned on one line: what the buttons do here
 		std::vector<std::pair<u8, std::string_view>> hints;
-		if (m_tab == tab::home && !m_games.empty())
+		if (m_gs_open)
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), "Change");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Use global");
+			hints.emplace_back(resource_config::cancel_button_resource(), "Save and close");
+		}
+		else if (m_tab == tab::home && !m_games.empty())
 		{
 			hints.emplace_back(resource_config::confirm_button_resource(), m_focus == focus::tiles ? "Play" : "Select");
 			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::triangle), "Settings");
@@ -586,8 +595,11 @@ namespace rsx::overlays
 			hints.emplace_back(resource_config::confirm_button_resource(), "Select");
 			hints.emplace_back(resource_config::cancel_button_resource(), "Back");
 		}
-		hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::L1), "");
-		hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::R1), "Tabs");
+		if (!m_gs_open)
+		{
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::L1), "");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::R1), "Tabs");
+		}
 
 		m_hints.clear();
 		for (const auto& [image, text] : hints)
@@ -906,6 +918,10 @@ namespace rsx::overlays
 				{
 					fs::remove_all(cache);
 				}
+				if (const std::string config = rpcs3::utils::get_custom_config_path(info.serial); fs::is_file(config))
+				{
+					fs::remove_file(config);
+				}
 				Emu.RemoveGames({info.serial});
 			}
 
@@ -1052,6 +1068,504 @@ namespace rsx::overlays
 		boot_game(info.path, info.serial);
 	}
 
+
+	namespace
+	{
+		// The settings a game may want of its own, as the config file names them
+		struct game_setting_spec
+		{
+			const char* section;
+			const char* key;
+			const char* label;
+			const char* help;
+			std::vector<std::string> options; // empty: every value the setting has
+		};
+
+		const std::vector<game_setting_spec>& game_setting_specs()
+		{
+			static const std::vector<game_setting_spec> specs
+			{
+				{"", "", "PROCESSOR", "", {}},
+				{"Core", "PPU Decoder", "PPU decoder", "How the code of the PS3's main processor runs. The recompiler is far faster; the interpreter is only for tracking down a fault.", {}},
+				{"Core", "SPU Decoder", "SPU decoder", "How the code of the SPUs runs. LLVM is the fastest; the others are slower fallbacks for a game that breaks with it.", {}},
+				{"Core", "SPU Block Size", "SPU block size", "How much SPU code is compiled at once. Mega and Giga can run faster but compile longer; Safe works with every game.", {}},
+				{"Core", "SPU XFloat Accuracy", "SPU float accuracy", "How exactly the SPUs' floating point is followed. Raise it for broken lighting, physics or animation; lower is faster.", {}},
+				{"Core", "Preferred SPU Threads", "Preferred SPU threads", "How many SPU threads may run at the same time. Auto leaves it to RPCS3; some heavy games run better with 1 or 2.", {"0", "1", "2", "3", "4", "5", "6"}},
+				{"Core", "Max SPURS Threads", "Max SPURS threads", "Caps the threads a game's SPURS task system may use. Lower can help heavy games; too low can stutter.", {"1", "2", "3", "4", "5", "6"}},
+				{"Core", "SPU loop detection", "SPU loop detection", "Lets the processor go when an SPU waits in a loop. Can make a game faster, or break timing in a few.", {}},
+				{"", "", "GRAPHICS", "", {}},
+				{"Video", "Resolution Scale", "Resolution scale", "Draws the game at a multiple of its own resolution. Above 100% is sharper and costs GPU time.", {"50", "75", "100", "125", "150", "200", "250", "300"}},
+				{"Video", "Frame limit", "Frame limit", "Caps the frame rate. Auto follows the game; Off can make a game run too fast.", {}},
+				{"Video", "Shader Mode", "Shader mode", "How new shaders are built. Async builds them on other threads, so a new effect waits a moment instead of the whole game. (The shader interpreter froze the console and is left out.)",
+					{"Async Recompiler (multi-threaded)", "Legacy Recompiler (single-threaded)"}},
+				{"Video", "Resolution", "Resolution", "The output resolution the game is told the PS3 has. Most games want 720p.", {}},
+				{"Video", "Anisotropic Filter Override", "Anisotropic filtering", "Sharpens textures seen at an angle. Auto keeps the game's own setting.", {"0", "2", "4", "8", "16"}},
+				{"Video", "Write Color Buffers", "Write color buffers", "Copies what is drawn back to the PS3's memory. Fixes missing effects in some games, at a cost.", {}},
+				{"Video", "Strict Rendering Mode", "Strict rendering", "Follows the PS3's rendering rules more closely. Fixes some graphical errors and is slower.", {}},
+				{"Video", "Multithreaded RSX", "Multithreaded RSX", "Moves part of the graphics work to a thread of its own. Can help games that are short of processor time.", {}},
+				{"Video", "Relaxed ZCULL Sync", "Relaxed ZCULL sync", "Looser timing for occlusion queries. Faster in games that use many; things may flicker.", {}},
+				{"Video", "Disable ZCull Occlusion Queries", "Skip occlusion queries", "Answers occlusion queries without drawing them. Faster; objects may pop in or vanish.", {}},
+				{"", "", "AUDIO", "", {}},
+				{"Audio", "Master Volume", "Volume", "The game's volume.", {"25", "50", "75", "100", "125", "150", "200"}},
+				{"Audio", "Enable Time Stretching", "Time stretching", "Stretches the sound instead of letting it crackle when the game runs slow.", {}},
+			};
+			return specs;
+		}
+
+		cfg::_base* find_setting(cfg::node& root, std::string_view section, std::string_view key)
+		{
+			for (cfg::_base* node : root.get_nodes())
+			{
+				if (node->get_type() != cfg::type::node || node->get_name() != section)
+				{
+					continue;
+				}
+				for (cfg::_base* setting : static_cast<cfg::node*>(node)->get_nodes())
+				{
+					if (setting->get_name() == key)
+					{
+						return setting;
+					}
+				}
+			}
+			return nullptr;
+		}
+
+		std::string setting_text(const std::string& key, const std::string& value)
+		{
+			if (value == "true") return "On";
+			if (value == "false") return "Off";
+			if (value == "0" && (key == "Preferred SPU Threads" || key == "Anisotropic Filter Override")) return "Auto";
+			if (key == "Resolution Scale" || key == "Master Volume") return value + "%";
+			if (key == "Anisotropic Filter Override") return value + "x";
+			return value;
+		}
+
+		// The global config, as a game's boot starts from: the defaults, then config.yml
+		std::unique_ptr<cfg_root> load_global_config()
+		{
+			auto root = std::make_unique<cfg_root>();
+			root->from_string(g_cfg_defaults);
+			if (fs::file file{fs::get_config_dir(true) + "config.yml"})
+			{
+				root->from_string(file.to_string());
+			}
+			return root;
+		}
+
+		std::string yaml_quoted(std::string_view text)
+		{
+			std::string result = "\"";
+			for (const char c : text)
+			{
+				if (c == '"' || c == '\\') result += '\\';
+				result += c;
+			}
+			return result + "\"";
+		}
+
+		// The entries of `config` that differ from `base`, as YAML: what a custom
+		// config needs to hold, and nothing the global config already says
+		bool write_differences(std::string& out, const cfg::node& config, const cfg::node& base, int depth)
+		{
+			bool any = false;
+			const auto& nodes = config.get_nodes();
+			const auto& base_nodes = base.get_nodes();
+			for (usz i = 0; i < nodes.size() && i < base_nodes.size(); i++)
+			{
+				const cfg::_base* entry = nodes[i];
+				const cfg::_base* base_entry = base_nodes[i];
+				const std::string indent(depth * 2, ' ');
+
+				switch (entry->get_type())
+				{
+				case cfg::type::node:
+				{
+					std::string inner;
+					if (write_differences(inner, *static_cast<const cfg::node*>(entry), *static_cast<const cfg::node*>(base_entry), depth + 1))
+					{
+						out += indent + yaml_quoted(entry->get_name()) + ":\n" + inner;
+						any = true;
+					}
+					break;
+				}
+				case cfg::type::_bool:
+				case cfg::type::_enum:
+				case cfg::type::_int:
+				case cfg::type::uint:
+				case cfg::type::string:
+				{
+					if (const std::string value = entry->to_string(); value != base_entry->to_string())
+					{
+						out += indent + yaml_quoted(entry->get_name()) + ": " + yaml_quoted(value) + "\n";
+						any = true;
+					}
+					break;
+				}
+				default:
+					break;
+				}
+			}
+			return any;
+		}
+	}
+
+	void ps5_launcher_dialog::open_game_settings()
+	{
+		if (m_selected < 0 || static_cast<usz>(m_selected) >= m_games.size())
+		{
+			return;
+		}
+
+		const big_picture_game_info& info = m_games[m_selected].info;
+		if (info.serial.empty())
+		{
+			return;
+		}
+
+		m_gs_serial = info.serial;
+		m_gs_name = info.name.empty() ? info.serial : info.name;
+
+		// What the game gets today: the global config, then its custom config
+		const auto global = load_global_config();
+		const auto game = load_global_config();
+		if (fs::file file{rpcs3::utils::get_custom_config_path(m_gs_serial)})
+		{
+			game->from_string(file.to_string());
+		}
+
+		m_gs_rows.clear();
+		for (const game_setting_spec& spec : game_setting_specs())
+		{
+			game_setting row;
+			row.label = spec.label;
+			if (!*spec.section)
+			{
+				row.heading = true;
+				m_gs_rows.push_back(std::move(row));
+				continue;
+			}
+
+			cfg::_base* global_setting = find_setting(*global, spec.section, spec.key);
+			cfg::_base* game_setting_entry = find_setting(*game, spec.section, spec.key);
+			if (!global_setting || !game_setting_entry)
+			{
+				launcher_log.error("Game settings: no setting %s/%s", spec.section, spec.key);
+				continue;
+			}
+
+			row.section = spec.section;
+			row.key = spec.key;
+			row.help = spec.help;
+			row.global = global_setting->to_string();
+			row.value = game_setting_entry->to_string();
+			row.options = spec.options.empty() ? global_setting->to_list() : spec.options;
+			for (const std::string& value : {row.global, row.value})
+			{
+				if (std::find(row.options.begin(), row.options.end(), value) == row.options.end())
+				{
+					row.options.insert(row.options.begin(), value);
+				}
+			}
+			m_gs_rows.push_back(std::move(row));
+		}
+
+		m_gs_selected = 1;
+		m_gs_scroll = 0;
+		m_gs_open = true;
+		m_gs_open_us = m_now_us;
+		play_sound(sound_effect::accept);
+		layout_game_settings();
+		layout_hints();
+	}
+
+	void ps5_launcher_dialog::close_game_settings()
+	{
+		// The game's custom config: what differs from the global config, among
+		// these settings and any the file held already
+		const auto global = load_global_config();
+		const auto game = load_global_config();
+		const std::string path = rpcs3::utils::get_custom_config_path(m_gs_serial);
+		if (fs::file file{path})
+		{
+			game->from_string(file.to_string());
+		}
+		for (const game_setting& row : m_gs_rows)
+		{
+			if (!row.heading)
+			{
+				if (cfg::_base* setting = find_setting(*game, row.section, row.key))
+				{
+					setting->from_string(row.value);
+				}
+			}
+		}
+
+		std::string yaml;
+		if (write_differences(yaml, *game, *global, 0))
+		{
+			fs::create_path(rpcs3::utils::get_custom_config_dir());
+			fs::pending_file temp(path);
+			if (temp.file)
+			{
+				temp.file.write(yaml);
+			}
+			if (!temp.file || !temp.commit())
+			{
+				launcher_log.error("Game settings: could not write %s (%s)", path, fs::g_tls_error);
+			}
+			else
+			{
+				launcher_log.notice("Game settings: saved %s", path);
+			}
+		}
+		else if (fs::is_file(path))
+		{
+			// Nothing of its own left: the game follows the global config
+			fs::remove_file(path);
+			launcher_log.notice("Game settings: removed %s", path);
+		}
+
+		m_gs_open = false;
+		m_gs_items.clear();
+		play_sound(sound_effect::cancel);
+		layout_hints();
+	}
+
+	void ps5_launcher_dialog::handle_game_settings(pad_button button_press)
+	{
+		const bool up = button_press == pad_button::dpad_up || button_press == pad_button::ls_up;
+		const bool down = button_press == pad_button::dpad_down || button_press == pad_button::ls_down;
+		const bool left = button_press == pad_button::dpad_left || button_press == pad_button::ls_left;
+		const bool right = button_press == pad_button::dpad_right || button_press == pad_button::ls_right || button_press == pad_button::cross;
+
+		if (button_press == pad_button::circle || button_press == pad_button::triangle)
+		{
+			close_game_settings();
+			return;
+		}
+
+		if (up || down)
+		{
+			// The next row that is a setting, not a heading
+			s32 next = m_gs_selected;
+			do
+			{
+				next += up ? -1 : 1;
+			}
+			while (next >= 0 && next < static_cast<s32>(m_gs_rows.size()) && m_gs_rows[next].heading);
+
+			if (next >= 0 && next < static_cast<s32>(m_gs_rows.size()))
+			{
+				m_gs_selected = next;
+				play_sound(sound_effect::cursor);
+				layout_game_settings();
+			}
+			return;
+		}
+
+		if (m_gs_selected < 0 || static_cast<usz>(m_gs_selected) >= m_gs_rows.size())
+		{
+			return;
+		}
+		game_setting& row = m_gs_rows[m_gs_selected];
+
+		if (left || right)
+		{
+			const auto it = std::find(row.options.begin(), row.options.end(), row.value);
+			const s32 at = static_cast<s32>(it - row.options.begin());
+			const s32 count = static_cast<s32>(row.options.size());
+			row.value = row.options[(at + (left ? count - 1 : 1)) % count];
+			play_sound(sound_effect::cursor);
+			layout_game_settings();
+		}
+		else if (button_press == pad_button::square && row.value != row.global)
+		{
+			row.value = row.global;
+			play_sound(sound_effect::cancel);
+			layout_game_settings();
+		}
+	}
+
+	void ps5_launcher_dialog::layout_game_settings()
+	{
+		m_gs_items.clear();
+		const auto add = [this](std::unique_ptr<overlay_element> item) -> overlay_element&
+		{
+			m_gs_items.push_back(std::move(item));
+			return *m_gs_items.back();
+		};
+
+		// A veil over the art, deeper on the left where the list is
+		auto veil = std::make_unique<overlay_element>();
+		veil->set_size(virtual_width, virtual_height);
+		veil->back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.55f);
+		add(std::move(veil));
+
+		// Heading
+		auto kicker = make_label(spaced("GAME SETTINGS"), 10, f_semibold, c_text_dim);
+		place(*kicker, c_hero_x, 104);
+		add(std::move(kicker));
+
+		auto title = make_label("", 24, f_bold, c_text);
+		fit_text(*title, m_gs_name, 760);
+		place(*title, c_hero_x, 136);
+		add(std::move(title));
+
+		auto note = make_label("Saved for this game only, and used the next time it starts. Marked settings differ from the global ones.", 11, f_regular, c_text_dim);
+		place(*note, c_hero_x, 166);
+		add(std::move(note));
+
+		// The list: rows from y 196 to 646, scrolled to keep the selection in view
+		constexpr s16 list_x = c_hero_x - 12;
+		constexpr u16 list_w = 760;
+		constexpr s16 list_top = 192;
+		constexpr s16 list_bottom = 650;
+		constexpr s16 row_h = 38;
+		constexpr s16 heading_h = 34;
+
+		std::vector<s16> tops;
+		s16 y = 0;
+		for (const game_setting& row : m_gs_rows)
+		{
+			tops.push_back(y);
+			y = static_cast<s16>(y + (row.heading ? heading_h : row_h));
+		}
+		if (m_gs_selected >= 0 && static_cast<usz>(m_gs_selected) < tops.size())
+		{
+			const s16 top = tops[m_gs_selected];
+			const s16 visible = list_bottom - list_top;
+			// Keep the heading above the first setting in view
+			const s16 want_top = m_gs_selected > 0 && m_gs_rows[m_gs_selected - 1].heading ? tops[m_gs_selected - 1] : top;
+			if (want_top < m_gs_scroll) m_gs_scroll = want_top;
+			if (top + row_h > m_gs_scroll + visible) m_gs_scroll = top + row_h - visible;
+		}
+
+		for (usz i = 0; i < m_gs_rows.size(); i++)
+		{
+			const game_setting& row = m_gs_rows[i];
+			const s16 top = static_cast<s16>(list_top + tops[i] - m_gs_scroll);
+			const s16 h = row.heading ? heading_h : row_h;
+			if (top < list_top || top + h > list_bottom)
+			{
+				continue;
+			}
+
+			if (row.heading)
+			{
+				auto heading = make_label(spaced(row.label), 9, f_semibold, c_accent);
+				place(*heading, static_cast<s16>(list_x + 12), top + 22.f);
+				add(std::move(heading));
+				continue;
+			}
+
+			const bool selected = static_cast<s32>(i) == m_gs_selected;
+			const bool own = row.value != row.global;
+			const f32 mid = top + h / 2.f;
+
+			if (selected)
+			{
+				auto bar = std::make_unique<rounded_rect>();
+				bar->set_pos(list_x, static_cast<s16>(top + 2));
+				bar->set_size(list_w, static_cast<u16>(h - 4));
+				bar->border_radius = 10;
+				bar->back_color = color4f(1.f, 1.f, 1.f, 0.1f);
+				bar->border_size = 2;
+				bar->border_color = c_accent;
+				add(std::move(bar));
+			}
+			else
+			{
+				auto rule = std::make_unique<overlay_element>();
+				rule->set_pos(static_cast<s16>(list_x + 12), static_cast<s16>(top + h - 1));
+				rule->set_size(static_cast<u16>(list_w - 24), 1);
+				rule->back_color = color4f(1.f, 1.f, 1.f, 0.07f);
+				add(std::move(rule));
+			}
+
+			if (own)
+			{
+				auto dot = std::make_unique<ellipse>();
+				dot->set_size(6, 6);
+				dot->set_pos(static_cast<s16>(list_x + 12), static_cast<s16>(mid - 3));
+				dot->back_color = c_accent;
+				add(std::move(dot));
+			}
+
+			auto name = make_label(row.label, 13, selected ? f_semibold : f_medium, selected || own ? c_text : c_text_dim);
+			place(*name, static_cast<s16>(list_x + 26), mid);
+			add(std::move(name));
+
+			// The value, right-aligned, with arrows on the selected row
+			auto value = make_label(setting_text(row.key, row.value), 13, own ? f_semibold : f_medium, own ? c_accent : (selected ? c_text : c_text_dim));
+			const s16 value_right = static_cast<s16>(list_x + list_w - (selected ? 34 : 18));
+			place(*value, static_cast<s16>(value_right - value->w), mid);
+			const s16 value_x = value->x;
+			add(std::move(value));
+
+			if (selected)
+			{
+				auto less = make_label("‹", 15, f_semibold, c_text);
+				place(*less, static_cast<s16>(value_x - 16), mid);
+				add(std::move(less));
+				auto more = make_label("›", 15, f_semibold, c_text);
+				place(*more, static_cast<s16>(value_right + 10), mid);
+				add(std::move(more));
+			}
+		}
+
+		// The selected setting, explained, on the right
+		if (m_gs_selected >= 0 && static_cast<usz>(m_gs_selected) < m_gs_rows.size() && !m_gs_rows[m_gs_selected].heading)
+		{
+			const game_setting& row = m_gs_rows[m_gs_selected];
+			constexpr s16 panel_x = 852;
+			constexpr u16 panel_w = 388;
+
+			auto panel = std::make_unique<rounded_rect>();
+			panel->set_pos(panel_x, list_top);
+			panel->border_radius = 16;
+			panel->back_color = color4f(0.03f, 0.04f, 0.09f, 0.72f);
+			panel->border_size = 1;
+			panel->border_color = c_glass_border;
+			overlay_element& panel_ref = add(std::move(panel));
+
+			auto name = make_label(row.label, 15, f_semibold, c_text);
+			place(*name, static_cast<s16>(panel_x + 24), list_top + 34.f);
+			add(std::move(name));
+
+			auto help = make_label("", 12, f_regular, c_text_dim);
+			help->set_wrap_text(true);
+			help->set_text(row.help);
+			help->set_pos(static_cast<s16>(panel_x + 24), static_cast<s16>(list_top + 54));
+			help->set_size(panel_w - 48, 120);
+			help->auto_resize(false, panel_w - 48, 120);
+			const s16 help_bottom = static_cast<s16>(help->y + help->h);
+			add(std::move(help));
+
+			auto rule = std::make_unique<overlay_element>();
+			rule->set_pos(static_cast<s16>(panel_x + 24), static_cast<s16>(help_bottom + 18));
+			rule->set_size(panel_w - 48, 1);
+			rule->back_color = color4f(1.f, 1.f, 1.f, 0.12f);
+			add(std::move(rule));
+
+			const f32 line1 = help_bottom + 42.f;
+			const f32 line2 = line1 + 26.f;
+			for (const auto& [caption, text, f32_y, accent] : {std::tuple{"Global", setting_text(row.key, row.global), line1, false},
+					std::tuple{"This game", setting_text(row.key, row.value), line2, row.value != row.global}})
+			{
+				auto left_label = make_label(caption, 12, f_medium, c_text_dim);
+				place(*left_label, static_cast<s16>(panel_x + 24), f32_y);
+				add(std::move(left_label));
+				auto right_label = make_label(text, 12, f_semibold, accent ? c_accent : c_text);
+				place(*right_label, static_cast<s16>(panel_x + panel_w - 24 - right_label->w), f32_y);
+				add(std::move(right_label));
+			}
+
+			panel_ref.set_size(panel_w, static_cast<u16>(line2 + 26 - list_top));
+			panel_ref.refresh();
+		}
+	}
+
 	f32 ps5_launcher_dialog::intro_seconds() const
 	{
 		if (!m_play_intro)
@@ -1179,6 +1693,12 @@ namespace rsx::overlays
 			return;
 		}
 
+		if (m_gs_open)
+		{
+			handle_game_settings(button_press);
+			return;
+		}
+
 		// Tabs change from anywhere at the top level
 		if (button_press == pad_button::L1 || button_press == pad_button::R1)
 		{
@@ -1210,7 +1730,7 @@ namespace rsx::overlays
 
 		if (button_press == pad_button::triangle)
 		{
-			set_tab(tab::settings);
+			open_game_settings();
 			return;
 		}
 		if (button_press == pad_button::square)
@@ -1240,7 +1760,7 @@ namespace rsx::overlays
 			switch (m_focus)
 			{
 			case focus::play: boot_selected(); break;
-			case focus::settings: set_tab(tab::settings); break;
+			case focus::settings: open_game_settings(); break;
 			case focus::remove: ask_delete(); break;
 			default: break;
 			}
@@ -1281,7 +1801,17 @@ namespace rsx::overlays
 		result.add(m_fade_top.get_compiled());
 		result.add(m_fade_bottom.get_compiled());
 
-		if (m_tab == tab::home)
+		if (m_gs_open)
+		{
+			const f32 page = ease_out(progress((m_now_us - m_gs_open_us) / 1'000'000.f, 0.f, 0.3f));
+			compiled_resource items;
+			for (const auto& item : m_gs_items)
+			{
+				items.add(item->get_compiled());
+			}
+			add_animated(result, items, page, 0.f, 14.f * (1.f - page));
+		}
+		else if (m_tab == tab::home)
 		{
 			const f32 welcome = step(0.05f);
 			const f32 title = step(0.12f);

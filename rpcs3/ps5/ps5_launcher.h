@@ -168,6 +168,35 @@ namespace rsx::overlays
 		void layout_hints();
 		void layout_confirm();
 
+		// Game settings: a page of the selected game's own settings, kept in its
+		// custom config (config/custom_configs/config_<serial>.yml), which the
+		// emulator lays over the global config when the game boots
+		struct game_setting
+		{
+			std::string section;
+			std::string key;
+			std::string label;
+			std::string help;
+			std::vector<std::string> options;
+			std::string global;
+			std::string value;
+			bool heading = false;
+		};
+
+		bool m_gs_open = false;
+		u64 m_gs_open_us = 0;
+		std::string m_gs_serial;
+		std::string m_gs_name;
+		std::vector<game_setting> m_gs_rows;
+		s32 m_gs_selected = 0;
+		s32 m_gs_scroll = 0;
+		std::vector<std::unique_ptr<overlay_element>> m_gs_items;
+
+		void open_game_settings();
+		void close_game_settings();
+		void layout_game_settings();
+		void handle_game_settings(pad_button button_press);
+
 		animation_color_interpolate m_fade_animation{};
 
 		// The opening: once per run, the logo over a loading line, gliding into
