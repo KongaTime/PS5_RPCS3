@@ -1068,10 +1068,28 @@ atomic_wait_engine::wait(const void* data, u32 old_value, u64 timeout, atomic_wa
 	{
 		if (s_tls_one_time_wait_cb)
 		{
+#if defined(USE_STD) && defined(__PROSPERO__)
+			// PS5: the callback runs without the condition's mutex. It can notify
+			// (an SPU's get_ch_value: lv2_obj::notify_all), and a notification
+			// of this thread's own condition locks that mutex: the console's
+			// mutexes refuse the second lock (EDEADLK), and libc++ threw it to
+			// std::terminate (the Ratchet & Clank Collection, on my console).
+			// A notification made meanwhile still lands: it sets sync, which
+			// is tested under the mutex before any sleep
+			lock.unlock();
+			const bool go_on = s_tls_one_time_wait_cb(attempts);
+			lock.lock();
+
+			if (!go_on)
+			{
+				break;
+			}
+#else
 			if (!s_tls_one_time_wait_cb(attempts))
 			{
 				break;
 			}
+#endif
 		}
 
 #ifdef USE_FUTEX
