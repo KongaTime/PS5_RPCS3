@@ -9,6 +9,7 @@
 
 #include "stdafx.h"
 #include "ps5_audio_backend.h"
+#include "Utilities/Thread.h"
 
 #include <algorithm>
 #include <chrono>
@@ -121,21 +122,15 @@ void ps5_audio_backend::output_loop()
 {
 	alignas(64) s16 grain[c_grain * 2];
 
-	// Above the emulator's threads: a grain the console waits for is a gap in
-	// the sound however well the game keeps up (GTA IV's audio stuttered with
-	// time stretching on, on my console). Said once, with what the console
-	// made of it
+	// Above the emulator's threads, as cellAudio's own (set_native_priority:
+	// on the console a lower number is a higher priority). Said once, with
+	// what the console made of it
 	{
+		thread_ctrl::set_native_priority(1);
 		int policy = 0;
 		sched_param param{};
 		pthread_getschedparam(pthread_self(), &policy, &param);
-		const int before = param.sched_priority;
-		param.sched_priority = sched_get_priority_max(policy);
-		const int set = pthread_setschedparam(pthread_self(), policy, &param);
-		sched_param after{};
-		pthread_getschedparam(pthread_self(), &policy, &after);
-		ps5_audio.notice("Port %d's thread: policy %d, priority %d -> %d (range %d..%d, result %d)", m_port, policy, before, after.sched_priority,
-			sched_get_priority_min(policy), sched_get_priority_max(policy), set);
+		ps5_audio.notice("Port %d's thread: policy %d, priority %d (256 highest, 767 lowest)", m_port, policy, param.sched_priority);
 	}
 
 	// Every ten seconds while sound plays: the grains, those the callback
