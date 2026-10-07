@@ -1600,6 +1600,19 @@ namespace rsx::overlays
 			return specs;
 		}
 
+		// A setting's values to choose from. RPCS3's on/off settings list none
+		// (cfg::_bool has no to_list), and with only the current value to
+		// cycle through, CROSS changed nothing: Time stretching, the
+		// performance overlay and every other on/off setting stayed as they were
+		std::vector<std::string> setting_options(const cfg::_base& setting)
+		{
+			if (setting.get_type() == cfg::type::_bool)
+			{
+				return {"false", "true"};
+			}
+			return setting.to_list();
+		}
+
 		// A setting by its section ("Video", or "Video/Performance Overlay") and name
 		cfg::_base* find_setting(cfg::node& root, std::string_view section, std::string_view key)
 		{
@@ -1764,7 +1777,7 @@ namespace rsx::overlays
 			row.help = spec.help;
 			row.global = global_setting->to_string();
 			row.value = game_setting_entry->to_string();
-			row.options = spec.options.empty() ? global_setting->to_list() : spec.options;
+			row.options = spec.options.empty() ? setting_options(*global_setting) : spec.options;
 			for (const std::string& value : {row.global, row.value})
 			{
 				if (std::find(row.options.begin(), row.options.end(), value) == row.options.end())
@@ -2178,7 +2191,7 @@ namespace rsx::overlays
 			row.key = spec.key;
 			row.label = spec.label;
 			row.help = spec.help;
-			row.options = spec.options.empty() ? setting->to_list() : spec.options;
+			row.options = spec.options.empty() ? setting_options(*setting) : spec.options;
 			row.value = setting->to_string();
 			if (std::find(row.options.begin(), row.options.end(), row.value) == row.options.end())
 			{
