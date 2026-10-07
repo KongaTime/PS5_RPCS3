@@ -12,6 +12,14 @@
 
 namespace fs
 {
+#ifdef __PROSPERO__
+	// PS5: files and folders open through fs::file and fs::dir now, and a
+	// report of them by folder (File.cpp)
+	usz ps5_open_tracked();
+	std::string ps5_open_report();
+	extern void (*ps5_on_many_open)(const std::string& report); // set by the frontend
+#endif
+
 #ifdef _WIN32
 	static constexpr auto& delim = "/\\";
 	static constexpr auto& wdelim = L"/\\";

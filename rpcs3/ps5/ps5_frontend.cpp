@@ -595,6 +595,7 @@ namespace
 		g_emu_callbacks.get_scaled_image = [](const std::string&, s32, s32, s32&, s32&, u8*, bool) { return false; };
 		// The title's fonts (the launcher's Inter); the overlays' default is still
 		// the PS3's own, from dev_flash
+		fs::ps5_on_many_open = [](const std::string& report) { trace("open files: %s", report); };
 		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{"/app0/assets/fonts/"}; };
 		// A disc's packages (PKGDIR, INSDIR, PS3_EXTRA), installed to dev_hdd0 at
 		// its first boot, as the desktop's headless frontend does
@@ -1002,9 +1003,29 @@ int run(const char* boot_path)
 					// ppu_cmd::initialize), and with both recompilers the home menu
 					// stayed on its loading screen with no PPU code run (974d605)
 					const std::string progress_text = g_progr_text;
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; %d PPU threads:%s", seconds + 1,
+					// And the open files: a title holds about 249 by path at once,
+					// and GTA IV's boot ran out of them (bfb4830). Every descriptor
+					// below 4096, by kind, and those RPCS3's fs opened
+					u32 regular = 0, folders = 0, sockets = 0, others = 0;
+					for (int fd = 0; fd < 4096; fd++)
+					{
+						struct ::stat info;
+						if (::fstat(fd, &info) != 0) continue;
+						if (S_ISREG(info.st_mode)) regular++;
+						else if (S_ISDIR(info.st_mode)) folders++;
+						else if (S_ISSOCK(info.st_mode)) sockets++;
+						else others++;
+					}
+					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s", seconds + 1,
 						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
-						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, count, ppus);
+						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, regular, folders, sockets, others, static_cast<u32>(fs::ps5_open_tracked()), count, ppus);
+					// Near the limit, which ones (once per 40 more)
+					static u32 s_reported = 0;
+					if (const u32 open = regular + folders; open >= 150 && open >= s_reported + 40)
+					{
+						s_reported = open;
+						trace("open files: %s", fs::ps5_open_report());
+					}
 				}
 			});
 

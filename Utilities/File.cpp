@@ -10,6 +10,73 @@
 #include <iostream>
 
 #include "util/asm.hpp"
+
+#ifdef __PROSPERO__
+// PS5: the files and folders open through fs::file and fs::dir, by
+// descriptor, for the frontend's report. The console lets a title hold about
+// 249 files open by path at once (PS5_PayloadSDK's platform/docs/PROBE.md,
+// "Open files"), and GTA IV's boot ran out of them (EMFILE)
+namespace
+{
+	std::mutex s_ps5_open_mutex;
+	std::map<int, std::string> s_ps5_open;
+
+	void ps5_track_open(int fd, std::string_view path)
+	{
+		usz count = 0;
+		{
+			std::lock_guard lock(s_ps5_open_mutex);
+			s_ps5_open[fd] = std::string(path);
+			count = s_ps5_open.size();
+		}
+		// Crossing 150, 190, 230: said at once, through the frontend's hook
+		static atomic_t<usz> s_said = 0;
+		if (count >= 150 && count >= s_said + 40 && fs::ps5_on_many_open)
+		{
+			s_said = count;
+			fs::ps5_on_many_open(fs::ps5_open_report());
+		}
+	}
+
+	void ps5_track_close(int fd)
+	{
+		std::lock_guard lock(s_ps5_open_mutex);
+		s_ps5_open.erase(fd);
+	}
+}
+
+void (*fs::ps5_on_many_open)(const std::string&) = nullptr;
+
+usz fs::ps5_open_tracked()
+{
+	std::lock_guard lock(s_ps5_open_mutex);
+	return s_ps5_open.size();
+}
+
+std::string fs::ps5_open_report()
+{
+	// By folder, the most first; and the paths themselves when few
+	std::map<std::string, usz> by_folder;
+	std::lock_guard lock(s_ps5_open_mutex);
+	for (const auto& [fd, path] : s_ps5_open)
+	{
+		const usz slash = path.find_last_of('/');
+		by_folder[slash == umax ? std::string(".") : path.substr(0, slash)]++;
+	}
+	std::vector<std::pair<usz, std::string>> sorted;
+	for (const auto& [folder, count] : by_folder)
+	{
+		sorted.emplace_back(count, folder);
+	}
+	std::sort(sorted.begin(), sorted.end(), std::greater<>());
+	std::string result = fmt::format("%u open through fs:", s_ps5_open.size());
+	for (usz i = 0; i < sorted.size() && i < 12; i++)
+	{
+		fmt::append(result, " [%u in %s]", sorted[i].first, sorted[i].second);
+	}
+	return result;
+}
+#endif
 #include "util/coro.hpp"
 
 using namespace std::literals::string_literals;
@@ -736,6 +803,9 @@ namespace fs
 		{
 			if (m_fd >= 0)
 			{
+#ifdef __PROSPERO__
+				ps5_track_close(m_fd);
+#endif
 				::close(m_fd);
 			}
 		}
@@ -2137,10 +2207,16 @@ fs::file::file(const std::string& path, bs_t<open_mode> mode)
 		}
 
 		m_file = std::make_unique<unix_file>(fd, raw_device_size);
+#ifdef __PROSPERO__
+		ps5_track_open(fd, path);
+#endif
 		return;
 	}
 
 	m_file = std::make_unique<unix_file>(fd);
+#ifdef __PROSPERO__
+	ps5_track_open(fd, path);
+#endif
 
 	if (mode & fs::isfile && !(mode & fs::write) && get_stat().is_directory)
 	{
@@ -2382,6 +2458,9 @@ bool fs::dir::open(const std::string& path)
 		g_tls_error = to_error(errno);
 		return false;
 	}
+#ifdef __PROSPERO__
+	ps5_track_open(::dirfd(ptr), path + "/");
+#endif
 
 	class unix_dir final : public dir_base
 	{
@@ -2399,6 +2478,9 @@ bool fs::dir::open(const std::string& path)
 
 		~unix_dir() override
 		{
+#ifdef __PROSPERO__
+			ps5_track_close(::dirfd(m_dd));
+#endif
 			::closedir(m_dd);
 		}
 
