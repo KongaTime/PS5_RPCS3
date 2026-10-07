@@ -12,6 +12,7 @@
 #include "ps5_pad_handler.h"
 #include "ps5_firmware.h"
 #include "ps5_embedded_files.h"
+#include "ps5_audio_backend.h"
 #include "Input/pad_thread.h"
 
 #include "util/logs.hpp"
@@ -493,8 +494,13 @@ namespace
 
 		g_emu_callbacks.get_audio = []() -> std::shared_ptr<AudioBackend>
 		{
-			// The console's audio output is the next step
-			return std::make_shared<NullAudioBackend>();
+			// The console's own output (libSceAudioOut), a port per backend
+			// RPCS3 opens; /app0/rpcs3-mute.txt keeps the silent one
+			if (fs::is_file("/app0/rpcs3-mute.txt"))
+			{
+				return std::make_shared<NullAudioBackend>();
+			}
+			return std::make_shared<ps5_audio_backend>();
 		};
 		g_emu_callbacks.get_audio_enumerator = [](u64) -> std::shared_ptr<audio_device_enumerator>
 		{
