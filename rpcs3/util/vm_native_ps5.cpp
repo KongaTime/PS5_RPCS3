@@ -192,23 +192,20 @@ namespace utils
 			return;
 		}
 
-		// Execute asked for at map time is refused; direct memory mapped
-		// read-write and given execute with sceKernelMprotect runs (PS5_PayloadSDK's
-		// PROBE.md, ps5platform/exec.h). RPCS3's JIT commits its code wx or rx
-		const bool exec = prot == protection::wx || prot == protection::rx;
-		const int result = ps5_vrange_commit(pointer, size, exec ? ps5_protection(protection::rw) : ps5_protection(prot));
+		// Execute asked for at map time is refused; the platform layer maps new
+		// units read-write and gives them execute after, under its lock
+		// (PS5_PayloadSDK's PROBE.md, ps5platform/exec.h). The whole protection
+		// goes to it in one call: committing memory already backed only changes
+		// its protection, and committing RPCS3's JIT code read-write first, then
+		// executable, took execute away for a moment from code other threads
+		// were running. The asmjit runtime commits its code 2 MiB at a time, and
+		// two threads crossing into a new 2 MiB both commit it: GTA IV's SPU
+		// threads faulted executing their dispatch code just past 24 MiB, three
+		// at once, on my console
+		const int result = ps5_vrange_commit(pointer, size, ps5_protection(prot));
 		if (result != 0)
 		{
 			fmt::throw_exception("memory_commit(%p, 0x%x, %d) failed: 0x%x", pointer, size, static_cast<int>(prot), static_cast<u32>(result));
-		}
-
-		if (exec)
-		{
-			const auto [page, bytes] = page_span(pointer, size);
-			if (const s32 changed = sceKernelMprotect(page, bytes, kernel_protection(prot)); changed != 0)
-			{
-				fmt::throw_exception("memory_commit(%p, 0x%x, %d): execute refused: 0x%x", pointer, size, static_cast<int>(prot), static_cast<u32>(changed));
-			}
 		}
 	}
 
