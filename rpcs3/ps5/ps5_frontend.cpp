@@ -11,6 +11,7 @@
 #include "ps5_gs_frame.h"
 #include "ps5_pad_handler.h"
 #include "ps5_firmware.h"
+#include "ps5_embedded_files.h"
 #include "Input/pad_thread.h"
 
 #include "util/logs.hpp"
@@ -129,6 +130,32 @@ namespace
 		}
 
 		return changed;
+	}
+
+	// RPCS3's overlay images, built into the title (ps5_embedded_files.h),
+	// written to /app0/rpcs3/Icons/ui/ where its native dialogs look for them,
+	// each one missing or of another size. FTP could not add them to the
+	// title's own rpcs3/ folder (fs_move_failed, on my console). Returns how
+	// many it wrote
+	usz install_embedded_files(const std::string& dir)
+	{
+		usz written = 0;
+		for (unsigned i = 0; i < ps5_embedded_file_count; i++)
+		{
+			const ps5_embedded_file& file = ps5_embedded_files[i];
+			const std::string path = dir + file.name;
+			fs::stat_t info{};
+			if (fs::get_stat(path, info) && !info.is_directory && info.size == file.size)
+			{
+				continue;
+			}
+
+			if (fs::create_path(fs::get_parent_dir(path)) && fs::write_file(path, fs::rewrite, file.data, file.size))
+			{
+				written++;
+			}
+		}
+		return written;
 	}
 
 	// The compiled modules under path (<name>.obj.gz) that have no IR log
@@ -612,8 +639,10 @@ int run(const char* boot_path)
 	// and what earlier runs wrote is opened now
 	::umask(0);
 	usz seen = 0, refused = 0;
-	const usz opened = open_to_ftp("/app0/rpcs3", seen, refused);
+	// The folder itself too: FTP could not add a folder to it (fs_move_failed)
+	const usz opened = (::chmod("/app0/rpcs3", 0777) == 0) + open_to_ftp("/app0/rpcs3", seen, refused);
 	trace("frontend: /app0/rpcs3: %u files and folders, %u opened to FTP, %u refused (%s)", seen, opened, refused, refused ? fmt::format("errno %d", errno) : std::string("none"));
+	trace("frontend: %u of %u overlay images written to /app0/rpcs3/Icons/ui/", install_embedded_files("/app0/rpcs3/Icons/ui/"), ps5_embedded_file_count);
 
 	// The fault handler's readable copy of the title's code (Utilities/Thread.cpp)
 	if (ps5_load_code_copy("/app0/rpcs3-code.bin"))

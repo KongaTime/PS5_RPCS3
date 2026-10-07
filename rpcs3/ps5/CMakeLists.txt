@@ -14,6 +14,16 @@ add_library(rpcs3_ps5 STATIC
     ../Input/ps_move_tracker.cpp
     ../rpcs3_version.cpp
 )
+# RPCS3's overlay images (bin/Icons/ui), built in for the frontend to write to
+# /app0/rpcs3/Icons/ui/ (embed_files.py)
+file(GLOB_RECURSE ps5_icon_files CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/bin/Icons/ui/*.png)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ps5_icons.cpp
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/embed_files.py ${CMAKE_CURRENT_BINARY_DIR}/ps5_icons.cpp ${CMAKE_SOURCE_DIR}/bin/Icons/ui ${ps5_icon_files}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/embed_files.py ${ps5_icon_files}
+    VERBATIM)
+target_sources(rpcs3_ps5 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ps5_icons.cpp)
+target_include_directories(rpcs3_ps5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 target_link_libraries(rpcs3_ps5 PUBLIC rpcs3_emu 3rdparty::fusion 3rdparty::zlib) # Fusion: the pad thread's motion filter; zlib: the SCE decrypter (firmware)
 target_compile_options(rpcs3_ps5 PRIVATE "SHELL:-include ${PS5_VOLK_DIR}/volk.h")
 # std::terminate's report rethrows the exception for its message: the one unit
