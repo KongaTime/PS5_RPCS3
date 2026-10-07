@@ -43,6 +43,10 @@
 #include "Emu/Cell/Modules/cellOskDialog.h"
 #include "Emu/Cell/Modules/cellSaveData.h"
 #include "Emu/Cell/Modules/sceNpTrophy.h"
+#include "Emu/Cell/Modules/cellSysutil.h"
+#include "Emu/RSX/Overlays/overlay_manager.h"
+#include "Emu/RSX/Overlays/overlay_save_dialog.h"
+#include "Emu/RSX/Overlays/overlay_trophy_notification.h"
 #include "Emu/Cell/Modules/sceNp.h"
 #include "util/video_source.h"
 
@@ -169,6 +173,58 @@ namespace
 
 		return removed;
 	}
+
+	// The PS3's save data list (choose a save, or make a new one), drawn by
+	// RSX's native overlay as the desktop's save_data_dialog draws it, without
+	// its Qt fallback. With none, every list operation answered cancel: the
+	// Ratchet & Clank Collection's New Game and Load Game did nothing (its
+	// cellSaveDataUserListSave and ListLoad returned 1, on my console)
+	struct ps5_save_dialog final : SaveDialogBase
+	{
+		s32 ShowSaveDataList(const std::string& base_dir, std::vector<SaveDataEntry>& save_entries, s32 focused, u32 op, vm::ptr<CellSaveDataListSet> listSet, bool enable_overlay) override
+		{
+			const bool use_end = sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_BEGIN, 0) >= 0;
+			s32 result = -2;
+
+			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			{
+				result = manager->create<rsx::overlays::save_dialog>()->show(base_dir, save_entries, focused, op, listSet, enable_overlay);
+				if (result == rsx::overlays::user_interface::selection_code::error)
+				{
+					sys_log.error("PS5: the save data dialog returned an error");
+					result = -2;
+				}
+			}
+			else
+			{
+				sys_log.error("PS5: no overlay manager for the save data dialog");
+			}
+
+			if (use_end)
+			{
+				sysutil_send_system_cmd(CELL_SYSUTIL_DRAWING_END, 0);
+			}
+
+			return result;
+		}
+	};
+
+	// Trophy pop-ups, by the same overlay, as the desktop's
+	// trophy_notification_helper shows them
+	struct ps5_trophy_notification final : TrophyNotificationBase
+	{
+		s32 ShowTrophyNotification(const SceNpTrophyDetails& trophy, const std::vector<uchar>& trophy_icon_buffer) override
+		{
+			if (auto manager = g_fxo->try_get<rsx::overlays::display_manager>())
+			{
+				// More than one at a time: the notification schedules them
+				auto popup = std::make_shared<rsx::overlays::trophy_notification>();
+				return manager->add(popup, false)->show(trophy, trophy_icon_buffer);
+			}
+
+			return 0;
+		}
+	};
 
 	// The console's display, as swapchain_ps5.hpp chooses it
 	constexpr int display_width = 3840;
@@ -417,10 +473,10 @@ namespace
 
 		g_emu_callbacks.get_msg_dialog = []() -> std::shared_ptr<MsgDialogBase> { return {}; };
 		g_emu_callbacks.get_osk_dialog = []() -> std::shared_ptr<OskDialogBase> { return {}; };
-		g_emu_callbacks.get_save_dialog = []() -> std::unique_ptr<SaveDialogBase> { return {}; };
+		g_emu_callbacks.get_save_dialog = []() -> std::unique_ptr<SaveDialogBase> { return std::make_unique<ps5_save_dialog>(); };
 		g_emu_callbacks.get_sendmessage_dialog = []() -> std::shared_ptr<SendMessageDialogBase> { return {}; };
 		g_emu_callbacks.get_recvmessage_dialog = []() -> std::shared_ptr<RecvMessageDialogBase> { return {}; };
-		g_emu_callbacks.get_trophy_notification_dialog = []() -> std::unique_ptr<TrophyNotificationBase> { return {}; };
+		g_emu_callbacks.get_trophy_notification_dialog = []() -> std::unique_ptr<TrophyNotificationBase> { return std::make_unique<ps5_trophy_notification>(); };
 
 		g_emu_callbacks.on_run = [](bool) {};
 		g_emu_callbacks.on_pause = []() {};
