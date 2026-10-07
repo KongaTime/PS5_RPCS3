@@ -18,6 +18,36 @@ using spu_rdata_t = std::byte[128];
 extern void mov_rdata(spu_rdata_t& _dst, const spu_rdata_t& _src);
 extern bool cmp_rdata(const spu_rdata_t& _lhs, const spu_rdata_t& _rhs);
 
+// PS5 fork: the address of a FIFO offset that is not mapped yet because
+// nothing is io-mapped at all (the context's first commands, queued before the
+// game's first io map; see fetch_u32). Waits up to five seconds for a mapping
+static u32 wait_for_first_iomap(const rsx::rsx_iomap_table* table, u32 offset)
+{
+	const auto nothing_mapped = [table]
+	{
+		return std::all_of(table->ea.begin(), table->ea.end(), [](const atomic_t<u32>& ea) { return ea == umax; });
+	};
+
+	if (!nothing_mapped())
+	{
+		return umax;
+	}
+
+	static atomic_t<bool> s_said = false;
+	if (!s_said.exchange(true))
+	{
+		rsx_log.warning("FIFO: nothing is io-mapped yet; waiting for the command queue at offset 0x%x to be mapped", offset);
+	}
+
+	const u64 start = get_system_time();
+	while (nothing_mapped() && !Emu.IsStopped() && get_system_time() - start < 5'000'000)
+	{
+		std::this_thread::sleep_for(std::chrono::microseconds(100));
+	}
+
+	return table->get_addr(offset);
+}
+
 namespace rsx
 {
 	namespace FIFO
@@ -109,19 +139,13 @@ namespace rsx
 				u32 addr1 = m_iotable->get_addr(m_cache_addr);
 
 				// PS5 fork: an early SDK's libgcm_sys (GTA IV, BLUS30127, context
-				// flags 0x210) queues its first commands in local memory (its
-				// context's buffer is at 0xC0001000) before it maps any io: with
-				// nothing mapped yet, the FIFO's offsets are read as local ones
-				// rather than declaring the queue dead
-				if (addr1 == umax && m_cache_addr < m_thread->local_mem_size &&
-					std::all_of(m_iotable->ea.begin(), m_iotable->ea.end(), [](const atomic_t<u32>& ea) { return ea == umax; }))
+				// flags 0x210) sets the FIFO's put pointer a moment before it maps
+				// its command buffer (io 0x0 -> ea 0x30000000): a fetch in between
+				// finds nothing mapped and the queue was declared dead. While nothing
+				// at all is io-mapped, wait for the mapping
+				if (addr1 == umax)
 				{
-					static atomic_t<bool> s_said = false;
-					if (!s_said.exchange(true))
-					{
-						rsx_log.warning("FIFO: nothing is io-mapped; reading the command queue at offset 0x%x from local memory", m_cache_addr);
-					}
-					addr1 = rsx::constants::local_mem_base + m_cache_addr;
+					addr1 = wait_for_first_iomap(m_iotable, m_cache_addr);
 				}
 
 				if (addr1 == umax)
@@ -417,7 +441,7 @@ namespace rsx
 					return;
 				}
 
-				if (const u32 addr = m_iotable->get_addr(m_fifo_pos); addr + 1)
+				if (u32 addr = m_iotable->get_addr(m_fifo_pos); addr + 1 || (addr = wait_for_first_iomap(m_iotable, m_fifo_pos)) + 1)
 				{
 					m_cmd = vm::read32(addr);
 				}
