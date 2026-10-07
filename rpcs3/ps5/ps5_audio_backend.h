@@ -37,8 +37,9 @@ private:
 	void output_loop();
 
 	// Fills out (grain frames of interleaved stereo S16) from the write
-	// callback, or with silence
-	void fill(s16* out);
+	// callback, or with silence; says how much the callback had
+	enum class fill_result { full, short_read, empty };
+	fill_result fill(s16* out);
 
 	s32 m_port = -1;
 	std::thread m_thread;

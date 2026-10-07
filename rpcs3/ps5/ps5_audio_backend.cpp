@@ -11,6 +11,9 @@
 #include "ps5_audio_backend.h"
 
 #include <algorithm>
+#include <chrono>
+#include <pthread.h>
+#include <sched.h>
 #include <cmath>
 #include <cstring>
 
@@ -118,9 +121,35 @@ void ps5_audio_backend::output_loop()
 {
 	alignas(64) s16 grain[c_grain * 2];
 
+	// Above the emulator's threads: a grain the console waits for is a gap in
+	// the sound however well the game keeps up (GTA IV's audio stuttered with
+	// time stretching on, on my console). Said once, with what the console
+	// made of it
+	{
+		int policy = 0;
+		sched_param param{};
+		pthread_getschedparam(pthread_self(), &policy, &param);
+		const int before = param.sched_priority;
+		param.sched_priority = sched_get_priority_max(policy);
+		const int set = pthread_setschedparam(pthread_self(), policy, &param);
+		sched_param after{};
+		pthread_getschedparam(pthread_self(), &policy, &after);
+		ps5_audio.notice("Port %d's thread: policy %d, priority %d -> %d (range %d..%d, result %d)", m_port, policy, before, after.sched_priority,
+			sched_get_priority_min(policy), sched_get_priority_max(policy), set);
+	}
+
+	// Every ten seconds while sound plays: the grains, those the callback
+	// could not fill (the emulator behind), and the longest wait between two
+	// grains taken (this thread behind; one grain is 5.3 ms)
+	using clock = std::chrono::steady_clock;
+	u32 grains = 0, short_reads = 0, empty = 0;
+	s64 longest_us = 0;
+	auto window = clock::now();
+	auto last = window;
+
 	while (m_running)
 	{
-		fill(grain);
+		const fill_result result = fill(grain);
 
 		// Blocks for one grain: the console's pace is the stream's clock. An
 		// output that stops taking grains is said once, not left to spin
@@ -132,13 +161,35 @@ void ps5_audio_backend::output_loop()
 			}
 			sceKernelUsleep(5000);
 		}
+
+		const auto now = clock::now();
+		const bool playing = m_playing;
+		if (playing)
+		{
+			grains++;
+			short_reads += result == fill_result::short_read;
+			empty += result == fill_result::empty;
+			longest_us = std::max<s64>(longest_us, std::chrono::duration_cast<std::chrono::microseconds>(now - last).count());
+		}
+		last = now;
+
+		if (now - window >= std::chrono::seconds(10))
+		{
+			if (grains)
+			{
+				ps5_audio.notice("Port %d: %u grains in 10 s, %u short and %u empty from the emulator, longest wait %.1f ms", m_port, grains, short_reads, empty, longest_us / 1000.);
+			}
+			grains = short_reads = empty = 0;
+			longest_us = 0;
+			window = now;
+		}
 	}
 
 	// The grain still queued
 	sceAudioOutOutput(m_port, nullptr);
 }
 
-void ps5_audio_backend::fill(s16* out)
+ps5_audio_backend::fill_result ps5_audio_backend::fill(s16* out)
 {
 	const u32 sample_bytes = m_sample_size == AudioSampleSize::S16 ? 2 : 4;
 	const u32 frame_bytes = sample_bytes * 2;
@@ -162,8 +213,9 @@ void ps5_audio_backend::fill(s16* out)
 	if (!written)
 	{
 		std::memset(out, 0, c_grain * 2 * sizeof(s16));
-		return;
+		return fill_result::empty;
 	}
+	const fill_result result = written < frames * frame_bytes ? fill_result::short_read : fill_result::full;
 
 	const u32 got = written / frame_bytes;
 	const auto sample = [&](u32 frame, u32 channel) -> f32
@@ -188,7 +240,7 @@ void ps5_audio_backend::fill(s16* out)
 			out[i * 2] = to_s16(sample(i, 0));
 			out[i * 2 + 1] = to_s16(sample(i, 1));
 		}
-		return;
+		return result;
 	}
 
 	// Linear between the frames read, the last grain's last frame first
@@ -208,4 +260,5 @@ void ps5_audio_backend::fill(s16* out)
 	m_phase = position - frames;
 	m_last[0] = sample(frames - 1, 0);
 	m_last[1] = sample(frames - 1, 1);
+	return result;
 }
