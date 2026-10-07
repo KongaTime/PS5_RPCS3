@@ -163,6 +163,8 @@ namespace rsx::overlays
 
 	ps5_launcher_dialog::~ps5_launcher_dialog()
 	{
+		m_delete_thread.reset();
+
 		if (m_enumeration_thread)
 		{
 			*m_enumeration_thread = thread_state::aborting;
@@ -267,6 +269,44 @@ namespace rsx::overlays
 		}
 		style_label(m_settings_label, "Game settings", 16, c_text);
 
+		m_delete_button.border_radius = 24;
+		m_delete_button.back_color = color4f(1.f, 1.f, 1.f, 0.08f);
+		m_delete_button.border_size = 1;
+		m_delete_button.border_color = color4f(1.f, 1.f, 1.f, 0.35f);
+		style_label(m_delete_label, "Delete", 16, c_text);
+		m_delete_button.set_size(static_cast<u16>(m_delete_label.w + 48), 48);
+
+		// The delete confirmation, centred over a dimmed screen
+		m_confirm_dim.set_size(virtual_width, virtual_height);
+		m_confirm_dim.back_color = color4f(0.f, 0.f, 0.f, 0.6f);
+		m_confirm_panel.set_size(640, 230);
+		m_confirm_panel.set_pos((virtual_width - 640) / 2, (virtual_height - 230) / 2);
+		m_confirm_panel.border_radius = 18;
+		m_confirm_panel.back_color = color4f(0.07f, 0.08f, 0.14f, 0.97f);
+		m_confirm_panel.border_size = 1;
+		m_confirm_panel.border_color = color4f(1.f, 1.f, 1.f, 0.2f);
+		m_confirm_title.set_font(22);
+		m_confirm_title.fore_color = c_text;
+		m_confirm_title.back_color.a = 0.f;
+		m_confirm_title.set_wrap_text(true);
+		m_confirm_title.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 28));
+		m_confirm_title.set_size(576, 60);
+		m_confirm_body.set_font(15);
+		m_confirm_body.fore_color = c_text_dim;
+		m_confirm_body.back_color.a = 0.f;
+		m_confirm_body.set_wrap_text(true);
+		m_confirm_body.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 92));
+		m_confirm_body.set_size(576, 80);
+		m_confirm_yes.set_image_resource(resource_config::confirm_button_resource());
+		m_confirm_yes.set_font(15);
+		m_confirm_yes.back_color.a = 0.f;
+		m_confirm_yes.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 182));
+		m_confirm_no.set_image_resource(resource_config::cancel_button_resource());
+		m_confirm_no.set_text("Cancel");
+		m_confirm_no.set_font(15);
+		m_confirm_no.back_color.a = 0.f;
+		m_confirm_no.set_pos(static_cast<s16>(m_confirm_panel.x + 200), static_cast<s16>(m_confirm_panel.y + 182));
+
 		// The games row
 		style_label(m_row_title, "Your games", 15, c_text);
 		m_row_title.set_pos(c_row_x, c_row_y - 36);
@@ -291,14 +331,16 @@ namespace rsx::overlays
 			button.set_font(15);
 			button.back_color.a = 0.f;
 		};
-		hint(m_hint_play, resource_config::confirm_button_resource(), "Play");
-		hint(m_hint_settings, resource_config::standard_image_resource::triangle, "Game settings");
+		hint(m_hint_play, resource_config::confirm_button_resource(), "Select");
+		hint(m_hint_settings, resource_config::standard_image_resource::triangle, "Settings");
+		hint(m_hint_delete, resource_config::standard_image_resource::square, "Delete");
 		hint(m_hint_l1, resource_config::standard_image_resource::L1, "");
 		hint(m_hint_r1, resource_config::standard_image_resource::R1, "Tabs");
-		m_hint_r1.set_pos(1140, 676);
-		m_hint_l1.set_pos(1106, 676);
-		m_hint_settings.set_pos(930, 676);
-		m_hint_play.set_pos(830, 676);
+		m_hint_r1.set_pos(1150, 676);
+		m_hint_l1.set_pos(1116, 676);
+		m_hint_delete.set_pos(1000, 676);
+		m_hint_settings.set_pos(870, 676);
+		m_hint_play.set_pos(750, 676);
 
 		layout_home();
 	}
@@ -373,6 +415,10 @@ namespace rsx::overlays
 		m_settings_button.set_pos(static_cast<s16>(m_play_button.x + m_play_button.w + 24), y);
 		m_settings_icon.set_pos(static_cast<s16>(m_settings_button.x + 12), static_cast<s16>(y + 12));
 		m_settings_label.set_pos(static_cast<s16>(m_settings_button.x + 62), static_cast<s16>(y + (48 - m_settings_label.h) / 2));
+		m_delete_button.set_pos(static_cast<s16>(m_settings_label.x + m_settings_label.w + 36), y);
+		m_delete_label.set_pos(static_cast<s16>(m_delete_button.x + 24), static_cast<s16>(y + (48 - m_delete_label.h) / 2));
+		m_delete_button.refresh();
+		m_delete_label.refresh();
 
 		for (overlay_element* element : std::initializer_list<overlay_element*>{&m_title, &m_play_button, &m_play_icon, &m_play_label, &m_settings_button, &m_settings_icon, &m_settings_label})
 		{
@@ -445,6 +491,137 @@ namespace rsx::overlays
 		{
 			style_label(m_placeholder, "No games found. Put each game's folder in /data/homebrew/PPSA99200/rpcs3/games/", 16, c_text_dim);
 		}
+
+		layout_focus();
+	}
+
+	void ps5_launcher_dialog::layout_focus()
+	{
+		// The focused button gets the accent's outline; the tile outline shows
+		// strongly while the row has the focus, faintly while a button has it
+		const auto outline = [](overlay_element& button, bool focused, u8 idle_border)
+		{
+			button.border_size = focused ? 3 : idle_border;
+			button.border_color = focused ? c_accent : color4f(1.f, 1.f, 1.f, 0.35f);
+			button.refresh();
+		};
+		outline(m_play_button, m_focus == focus::play, 0);
+		outline(m_settings_button, m_focus == focus::settings, 1);
+		outline(m_delete_button, m_focus == focus::remove, 1);
+
+		m_highlight.border_color = m_focus == focus::tiles ? c_accent : color4f(c_accent.r, c_accent.g, c_accent.b, 0.35f);
+		m_highlight.pulse_effect_enabled = m_focus == focus::tiles;
+		m_highlight.refresh();
+	}
+
+	void ps5_launcher_dialog::set_focus(focus next)
+	{
+		if (next == m_focus)
+		{
+			return;
+		}
+
+		m_focus = next;
+		play_sound(sound_effect::cursor);
+		layout_focus();
+	}
+
+	void ps5_launcher_dialog::ask_delete()
+	{
+		if (m_selected < 0 || static_cast<usz>(m_selected) >= m_games.size())
+		{
+			return;
+		}
+
+		const big_picture_game_info& info = m_games[m_selected].info;
+		m_confirm_title.set_text("Delete " + (info.name.empty() ? info.serial : info.name) + "?");
+		m_confirm_body.set_text("This removes the game's files, its compiled code and its place in the library from the console. Saves are kept. It can't be undone.");
+		m_confirm_yes.set_text("Delete");
+		m_confirm_no.set_visible(true);
+		m_confirm_delete = true;
+		m_delete_result.clear();
+		play_sound(sound_effect::dialog_ok);
+	}
+
+	void ps5_launcher_dialog::delete_selected()
+	{
+		if (m_selected < 0 || static_cast<usz>(m_selected) >= m_games.size() || m_deleting)
+		{
+			return;
+		}
+
+		const big_picture_game_info info = m_games[m_selected].info;
+
+		// Only a folder directly in the games folder or dev_hdd0/game is ever
+		// removed: the one the game's path starts in
+		std::string root;
+		for (std::string base : {rpcs3::utils::get_games_dir(), rpcs3::utils::get_hdd0_game_dir()})
+		{
+			if (!base.ends_with('/'))
+			{
+				base += '/';
+			}
+			if (info.path.starts_with(base) && info.path.size() > base.size())
+			{
+				const std::string rest = info.path.substr(base.size());
+				const std::string first = rest.substr(0, rest.find('/'));
+				if (!first.empty() && first != "." && first != ".." && !first.starts_with("$") && !first.starts_with(".") && !first.starts_with("\xef"))
+				{
+					root = base + first;
+				}
+			}
+		}
+
+		m_confirm_delete = false;
+		m_deleting = true;
+		m_confirm_title.set_text("Deleting " + (info.name.empty() ? info.serial : info.name) + "...");
+		m_confirm_body.set_text("This can take a while for a large game.");
+
+		m_delete_thread = std::make_unique<named_thread<std::function<void()>>>("Launcher Delete", [this, info, root]()
+		{
+			std::string result;
+
+			if (root.empty())
+			{
+				launcher_log.error("Not deleting '%s': its path (%s) is not in the games folder or dev_hdd0/game", info.serial, info.path);
+				result = "This game isn't in the app's games folder, so its files were left alone. It was removed from the library.";
+			}
+			else if (fs::is_dir(root) && !fs::remove_all(root))
+			{
+				launcher_log.error("Deleting %s failed: %s", root, fs::g_tls_error);
+				result = fmt::format("Some of the files couldn't be deleted (%s). Delete the folder over FTP instead:\n%s", fs::g_tls_error, root.substr(root.find("/rpcs3/") == umax ? 0 : root.find("/rpcs3/") + 1));
+			}
+			else
+			{
+				launcher_log.notice("Deleted %s", root);
+			}
+
+			// Its compiled code and its entry in games.yml
+			if (!info.serial.empty())
+			{
+				const std::string cache = rpcs3::utils::get_cache_dir_by_serial(info.serial);
+				if (!cache.empty() && fs::is_dir(cache))
+				{
+					fs::remove_all(cache);
+				}
+				Emu.RemoveGames({info.serial});
+			}
+
+			{
+				std::lock_guard lock(m_mutex);
+				m_delete_result = result;
+				if (!result.empty())
+				{
+					m_confirm_title.set_text("Couldn't delete everything");
+					m_confirm_body.set_text(result);
+					m_confirm_yes.set_text("OK");
+					m_confirm_no.set_visible(false);
+				}
+			}
+
+			m_deleting = false;
+			m_reload_requested = true;
+		});
 	}
 
 	void ps5_launcher_dialog::start_reload()
@@ -570,6 +747,12 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::update(u64 timestamp_us)
 	{
+		if (m_reload_requested.exchange(false))
+		{
+			m_enumeration_thread.reset();
+			start_reload();
+		}
+
 		if (m_fade_animation.active)
 		{
 			m_fade_animation.update(timestamp_us);
@@ -594,6 +777,26 @@ namespace rsx::overlays
 
 		std::lock_guard lock(m_mutex);
 
+		// The delete confirmation, or its result, takes every button
+		if (m_deleting)
+		{
+			return;
+		}
+		if (m_confirm_delete || !m_delete_result.empty())
+		{
+			if (button_press == pad_button::cross && m_confirm_delete)
+			{
+				delete_selected();
+			}
+			else if (button_press == pad_button::cross || button_press == pad_button::circle)
+			{
+				m_confirm_delete = false;
+				m_delete_result.clear();
+				play_sound(sound_effect::cancel);
+			}
+			return;
+		}
+
 		// Tabs change from anywhere at the top level
 		if (button_press == pad_button::L1 || button_press == pad_button::R1)
 		{
@@ -613,24 +816,52 @@ namespace rsx::overlays
 			return;
 		}
 
-		switch (button_press)
+		if (m_games.empty())
 		{
-		case pad_button::dpad_left:
-		case pad_button::ls_left:
-			select_game(m_selected - 1);
-			break;
-		case pad_button::dpad_right:
-		case pad_button::ls_right:
-			select_game(m_selected + 1);
-			break;
-		case pad_button::cross:
-			boot_selected();
-			break;
-		case pad_button::triangle:
+			return;
+		}
+
+		const bool up = button_press == pad_button::dpad_up || button_press == pad_button::ls_up;
+		const bool down = button_press == pad_button::dpad_down || button_press == pad_button::ls_down;
+		const bool left = button_press == pad_button::dpad_left || button_press == pad_button::ls_left;
+		const bool right = button_press == pad_button::dpad_right || button_press == pad_button::ls_right;
+
+		if (button_press == pad_button::triangle)
+		{
 			set_tab(tab::settings);
-			break;
-		default:
-			break;
+			return;
+		}
+		if (button_press == pad_button::square)
+		{
+			ask_delete();
+			return;
+		}
+
+		if (m_focus == focus::tiles)
+		{
+			if (left) select_game(m_selected - 1);
+			else if (right) select_game(m_selected + 1);
+			else if (up) set_focus(focus::play);
+			else if (button_press == pad_button::cross) boot_selected();
+			return;
+		}
+
+		// The buttons' row
+		constexpr focus order[] = {focus::play, focus::settings, focus::remove};
+		const s32 at = static_cast<s32>(std::find(std::begin(order), std::end(order), m_focus) - std::begin(order));
+
+		if (left && at > 0) set_focus(order[at - 1]);
+		else if (right && at < 2) set_focus(order[at + 1]);
+		else if (down || button_press == pad_button::circle) set_focus(focus::tiles);
+		else if (button_press == pad_button::cross)
+		{
+			switch (m_focus)
+			{
+			case focus::play: boot_selected(); break;
+			case focus::settings: set_tab(tab::settings); break;
+			case focus::remove: ask_delete(); break;
+			default: break;
+			}
 		}
 	}
 
@@ -669,6 +900,8 @@ namespace rsx::overlays
 				result.add(m_settings_button.get_compiled());
 				result.add(m_settings_icon.get_compiled());
 				result.add(m_settings_label.get_compiled());
+				result.add(m_delete_button.get_compiled());
+				result.add(m_delete_label.get_compiled());
 			}
 
 			result.add(m_row_title.get_compiled());
@@ -689,6 +922,7 @@ namespace rsx::overlays
 
 				result.add(m_hint_play.get_compiled());
 				result.add(m_hint_settings.get_compiled());
+				result.add(m_hint_delete.get_compiled());
 			}
 		}
 		else
@@ -713,6 +947,22 @@ namespace rsx::overlays
 		result.add(m_user_name.get_compiled());
 		result.add(m_hint_l1.get_compiled());
 		result.add(m_hint_r1.get_compiled());
+
+		if (m_confirm_delete || m_deleting || !m_delete_result.empty())
+		{
+			result.add(m_confirm_dim.get_compiled());
+			result.add(m_confirm_panel.get_compiled());
+			result.add(m_confirm_title.get_compiled());
+			result.add(m_confirm_body.get_compiled());
+			if (!m_deleting)
+			{
+				result.add(m_confirm_yes.get_compiled());
+				if (m_confirm_delete)
+				{
+					result.add(m_confirm_no.get_compiled());
+				}
+			}
+		}
 
 		m_fade_animation.apply(result);
 		return result;

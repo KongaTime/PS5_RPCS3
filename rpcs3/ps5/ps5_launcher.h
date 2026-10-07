@@ -46,10 +46,23 @@ namespace rsx::overlays
 			settings
 		};
 
+		// What the D-pad has on Home: the games row, or one of the buttons
+		enum class focus : u8
+		{
+			tiles,
+			play,
+			settings,
+			remove
+		};
+
 		void start_reload();
 		void select_game(s32 index);
 		void set_tab(tab next);
+		void set_focus(focus next);
 		void boot_selected();
+		void ask_delete();
+		void delete_selected();
+		void layout_focus();
 
 		void build_static();
 		void layout_tabs();
@@ -62,7 +75,16 @@ namespace rsx::overlays
 		atomic_t<bool> m_loading = true;
 
 		tab m_tab = tab::home;
+		focus m_focus = focus::tiles;
 		s32 m_selected = 0;
+
+		// Deleting a game: asked, then done on a thread of its own, then the
+		// list read again (update)
+		bool m_confirm_delete = false;
+		atomic_t<bool> m_deleting = false;
+		atomic_t<bool> m_reload_requested = false;
+		std::unique_ptr<named_thread<std::function<void()>>> m_delete_thread;
+		std::string m_delete_result; // shown until dismissed, when the deletion failed
 		s32 m_first_visible = 0;
 
 		// The page shown on the Library and Settings tabs
@@ -93,6 +115,8 @@ namespace rsx::overlays
 		ellipse m_settings_button;
 		image_view m_settings_icon;
 		label m_settings_label;
+		rounded_rect m_delete_button;
+		label m_delete_label;
 		std::unique_ptr<image_info> m_play_icon_data;
 		std::unique_ptr<image_info> m_settings_icon_data;
 
@@ -104,9 +128,18 @@ namespace rsx::overlays
 		rounded_rect m_highlight;
 		label m_placeholder;
 
+		// The delete confirmation
+		overlay_element m_confirm_dim;
+		rounded_rect m_confirm_panel;
+		label m_confirm_title;
+		label m_confirm_body;
+		image_button m_confirm_yes{140, 28};
+		image_button m_confirm_no{140, 28};
+
 		// Button prompts
 		image_button m_hint_play{120, 26};
 		image_button m_hint_settings{120, 26};
+		image_button m_hint_delete{100, 26};
 		image_button m_hint_l1{30, 26};
 		image_button m_hint_r1{120, 26};
 
