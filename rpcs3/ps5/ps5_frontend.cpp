@@ -242,6 +242,26 @@ namespace
 		}
 	};
 
+	// The native dialogs' video source (a save's animated icon, ICON1.PAM),
+	// without a decoder: never active, so the still icon shows. With none,
+	// video_view's ensure failed and took the game's save thread with it,
+	// the game frozen on its save (Ratchet & Clank 1, its second save, on
+	// my console)
+	struct ps5_still_video_source final : video_source
+	{
+		void set_iso_path(const std::string&) override {}
+		void set_video_path(const std::string&, bool) override {}
+		void set_audio_path(const std::string&, bool) override {}
+		void set_active(bool) override {}
+		bool get_active() const override { return false; }
+		bool has_new() const override { return false; }
+		void get_image(std::vector<u8>& data, int& w, int& h, int& ch, int& bpp) override
+		{
+			data.clear();
+			w = h = ch = bpp = 0;
+		}
+	};
+
 	// Trophy pop-ups, by the same overlay, as the desktop's
 	// trophy_notification_helper shows them
 	struct ps5_trophy_notification final : TrophyNotificationBase
@@ -579,7 +599,7 @@ namespace
 		g_emu_callbacks.display_sleep_control_supported = []() { return false; };
 		g_emu_callbacks.enable_display_sleep = [](bool) {};
 		g_emu_callbacks.check_microphone_permissions = []() {};
-		g_emu_callbacks.make_video_source = []() -> std::unique_ptr<video_source> { return {}; };
+		g_emu_callbacks.make_video_source = []() -> std::unique_ptr<video_source> { return std::make_unique<ps5_still_video_source>(); };
 		g_emu_callbacks.enable_gamemode = [](bool) {};
 		g_emu_callbacks.get_database_config = [](const std::string&) -> std::string { return {}; };
 	}
