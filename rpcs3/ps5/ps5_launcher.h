@@ -211,8 +211,14 @@ namespace rsx::overlays
 		f32 m_flow_pos = 0.f;
 		u64 m_last_update_us = 0;
 		image_view m_library_art;
-		image_view m_library_backdrop;
-		std::unique_ptr<image_info> m_library_backdrop_data;
+		// The selected case's turn (right stick, and a sway of its own), and
+		// the game's own menu, which its case zooms into
+		f32 m_cover_yaw = 0.f;
+		f32 m_cover_pitch = 0.f;
+		f32 m_sway_time = 0.f;
+		bool m_detail = false;
+		f32 m_detail_t = 0.f;
+		s32 m_detail_option = 0;
 		std::vector<u8> m_glow_pixels;
 		std::unique_ptr<memory_image_info> m_glow_image;
 		void handle_library(pad_button button_press);

@@ -16,6 +16,7 @@
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
 #include "Utilities/Config.h"
+#include "Input/pad_thread.h"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/Thread.h"
@@ -41,6 +42,7 @@ namespace rsx::overlays
 		const color4f c_glass{0.02f, 0.03f, 0.07f, 0.42f};
 		const color4f c_glass_border{1.f, 1.f, 1.f, 0.22f};
 		const color4f c_backdrop{0.02f, 0.03f, 0.08f, 1.f};
+		const color4f c_library_blue{0.004f, 0.008f, 0.184f, 1.f}; // #01022F
 
 		// The title's fonts (/app0/assets/fonts, the frontend's font folder);
 		// characters they lack come from the PS3's own font
@@ -568,15 +570,6 @@ namespace rsx::overlays
 		m_library_art.back_color.a = 0.f;
 		m_library_art.set_blur_strength(60);
 
-		// The Library's own picture (the title's art), if it is there
-		m_library_backdrop_data = load_image("/app0/assets/launcher/background.jpg");
-		if (m_library_backdrop_data)
-		{
-			m_library_backdrop.set_raw_image(m_library_backdrop_data.get());
-			m_library_backdrop.set_size(virtual_width, virtual_height);
-			m_library_backdrop.back_color.a = 0.f;
-		}
-
 		for (image_view* fade : {&m_fade_left, &m_fade_top, &m_fade_bottom})
 		{
 			fade->fore_color = c_backdrop;
@@ -767,6 +760,17 @@ namespace rsx::overlays
 			hints.emplace_back(resource_config::confirm_button_resource(), "Change");
 			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Use global");
 			hints.emplace_back(resource_config::cancel_button_resource(), "Save and close");
+		}
+		else if (m_tab == tab::library && m_detail)
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), "Select");
+			hints.emplace_back(resource_config::cancel_button_resource(), "Back");
+		}
+		else if (m_tab == tab::library && !m_games.empty())
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), "Open");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::triangle), "Settings");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Delete");
 		}
 		else if (m_tab != tab::settings && !m_games.empty())
 		{
@@ -1070,6 +1074,7 @@ namespace rsx::overlays
 		}
 
 		m_confirm_delete = false;
+		m_detail = false;
 		m_deleting = true;
 		m_confirm_title.set_text("Deleting " + (info.name.empty() ? info.serial : info.name) + "...");
 		m_confirm_body.set_text("This can take a while for a large game.");
@@ -1231,6 +1236,8 @@ namespace rsx::overlays
 		play_sound(sound_effect::cursor);
 		layout_tabs();
 
+		m_detail = false;
+		m_detail_t = 0.f;
 		if (m_tab == tab::library)
 		{
 			// The row starts where the selection is
@@ -1788,10 +1795,140 @@ namespace rsx::overlays
 	}
 
 
+	namespace
+	{
+		// The Library's 3D: covers are PS3 cases (a box 1 wide, 1.16 high and
+		// 0.1 deep), turned and placed in a space whose origin is the row's
+		// middle, seen through a pinhole at `c_focal` in front of the screen
+		constexpr f32 c_focal = 1100.f;
+		constexpr f32 c_row_mid_x = 640.f;
+		constexpr f32 c_row_mid_y = 330.f;
+		constexpr f32 c_case_w = 290.f;
+		constexpr f32 c_case_aspect = 1.156f;
+		constexpr f32 c_case_depth = 0.1f;
+		constexpr f32 c_deg = 3.14159265f / 180.f;
+
+		struct vec3
+		{
+			f32 x, y, z;
+		};
+
+		vec3 operator+(vec3 a, vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+		vec3 operator*(vec3 a, f32 s) { return {a.x * s, a.y * s, a.z * s}; }
+		f32 dot(vec3 a, vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+
+		// A case's pose: where its middle is, how it is turned, how big
+		struct case_pose
+		{
+			vec3 at{};
+			f32 yaw = 0.f;   // about the vertical axis, + turns its right edge away
+			f32 pitch = 0.f; // about the horizontal axis, + tips its top away
+			f32 scale = 1.f;
+			f32 alpha = 1.f;
+			bool mirrored = false; // its reflection in the floor
+			f32 floor_y = 0.f;
+		};
+
+		vec3 turn(const case_pose& pose, vec3 p)
+		{
+			// Yaw, then pitch
+			const f32 cy = std::cos(pose.yaw), sy = std::sin(pose.yaw);
+			const f32 cp = std::cos(pose.pitch), sp = std::sin(pose.pitch);
+			const vec3 a{p.x * cy + p.z * sy, p.y, -p.x * sy + p.z * cy};
+			return {a.x, a.y * cp - a.z * sp, a.y * sp + a.z * cp};
+		}
+
+		vec3 to_world(const case_pose& pose, vec3 local)
+		{
+			vec3 p = turn(pose, local * pose.scale) + pose.at;
+			if (pose.mirrored)
+			{
+				p.y = 2.f * pose.floor_y - p.y;
+			}
+			return p;
+		}
+
+		void project(vec3 p, f32& x, f32& y)
+		{
+			const f32 k = c_focal / (c_focal + p.z);
+			x = c_row_mid_x + p.x * k;
+			y = c_row_mid_y + p.y * k;
+		}
+
+		// One face of a case: a corner and two edges, in the case's own space
+		struct case_face
+		{
+			vec3 origin, edge_a, edge_b, normal;
+			bool textured;
+			f32 u0, u1, v0, v1;
+		};
+
+		std::vector<case_face> case_faces()
+		{
+			const f32 w = c_case_w, h = c_case_w * c_case_aspect, d = c_case_w * c_case_depth;
+			return
+			{
+				// Front: the cover
+				{{-w / 2, -h / 2, -d / 2}, {w, 0, 0}, {0, h, 0}, {0, 0, -1}, true, 0.f, 1.f, 0.f, 1.f},
+				// Spine (left): the cover's edge wraps round it
+				{{-w / 2, -h / 2, d / 2}, {0, 0, -d}, {0, h, 0}, {-1, 0, 0}, true, 0.f, 0.035f, 0.f, 1.f},
+				// The opening edge, top, bottom and back: the case's plastic
+				{{w / 2, -h / 2, -d / 2}, {0, 0, d}, {0, h, 0}, {1, 0, 0}, false, 0, 0, 0, 0},
+				{{-w / 2, -h / 2, d / 2}, {w, 0, 0}, {0, 0, -d}, {0, -1, 0}, false, 0, 0, 0, 0},
+				{{-w / 2, h / 2, -d / 2}, {w, 0, 0}, {0, 0, d}, {0, 1, 0}, false, 0, 0, 0, 0},
+				{{w / 2, -h / 2, d / 2}, {-w, 0, 0}, {0, h, 0}, {0, 0, 1}, false, 0, 0, 0, 0},
+			};
+		}
+
+		// Light from the front, above and a little left
+		const vec3 c_light = [] { const vec3 l{-0.3f, -0.55f, -1.f}; return l * (1.f / std::sqrt(dot(l, l))); }();
+	}
+
 	void ps5_launcher_dialog::handle_library(pad_button button_press)
 	{
 		if (m_games.empty())
 		{
+			return;
+		}
+
+		if (m_detail)
+		{
+			// The game's own menu
+			switch (button_press)
+			{
+			case pad_button::dpad_up:
+			case pad_button::ls_up:
+				if (m_detail_option > 0)
+				{
+					m_detail_option--;
+					play_sound(sound_effect::cursor);
+				}
+				break;
+			case pad_button::dpad_down:
+			case pad_button::ls_down:
+				if (m_detail_option < 3)
+				{
+					m_detail_option++;
+					play_sound(sound_effect::cursor);
+				}
+				break;
+			case pad_button::cross:
+				switch (m_detail_option)
+				{
+				case 0: boot_selected(); break;
+				case 1: open_game_settings(); break;
+				case 2: ask_delete(); break;
+				default: m_detail = false; play_sound(sound_effect::cancel); layout_hints(); break;
+				}
+				break;
+			case pad_button::circle:
+				m_detail = false;
+				play_sound(sound_effect::cancel);
+				layout_hints();
+				break;
+			default:
+				break;
+			}
 			return;
 		}
 
@@ -1812,7 +1949,11 @@ namespace rsx::overlays
 			select_game(m_selected + 5);
 			break;
 		case pad_button::cross:
-			boot_selected();
+			// Into the game's own menu: its case comes forward
+			m_detail = true;
+			m_detail_option = 0;
+			play_sound(sound_effect::accept);
+			layout_hints();
 			break;
 		case pad_button::triangle:
 			open_game_settings();
@@ -1830,23 +1971,13 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::compile_library(compiled_resource& result)
 	{
-		// The selected game's art, blurred and dim, under a glow in the app's
-		// colours: a wide blue one and a cyan heart behind the middle cover
-		if (m_library_backdrop_data)
+		// The deep blue, lighter toward the middle, and a cyan pool on the floor
+		// under the middle case
 		{
-			// The title's picture, a little dimmed so the covers stand out
-			result.add(m_library_backdrop.get_compiled());
-			overlay_element veil;
-			veil.set_size(virtual_width, virtual_height);
-			veil.back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.3f);
-			result.add(veil.get_compiled());
-		}
-		else if (m_background_image)
-		{
-			m_library_art.set_raw_image(m_background_image);
-			m_library_art.fore_color = color4f(1.f, 1.f, 1.f, 0.16f);
-			m_library_art.refresh();
-			result.add(m_library_art.get_compiled());
+			overlay_element base;
+			base.set_size(virtual_width, virtual_height);
+			base.back_color = c_library_blue;
+			result.add(base.get_compiled());
 		}
 		const auto glow = [&](s16 cx, s16 cy, u16 w, u16 h, const color4f& color)
 		{
@@ -1858,11 +1989,13 @@ namespace rsx::overlays
 			view.set_size(w, h);
 			result.add(view.get_compiled());
 		};
-		if (!m_library_backdrop_data)
-		{
-			glow(640, 340, 1500, 900, color4f(0.16f, 0.3f, 0.8f, 0.32f));
-		}
-		glow(640, 330, 720, 600, color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f));
+		glow(640, 320, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.45f));
+
+		const f32 detail = m_detail_t * m_detail_t * (3.f - 2.f * m_detail_t);
+		const f32 case_h = c_case_w * c_case_aspect;
+		const f32 floor_y = case_h / 2.f + 6.f;
+
+		glow(static_cast<s16>(640 - 330 * detail), static_cast<s16>(c_row_mid_y + floor_y + 10), 640, 150, color4f(c_accent.r, c_accent.g, c_accent.b, 0.22f));
 
 		if (m_games.empty())
 		{
@@ -1870,74 +2003,84 @@ namespace rsx::overlays
 			return;
 		}
 
-		// The row: the middle cover faces the screen; the others turn away to
-		// each side, smaller and darker, the further the more stacked
-		constexpr f32 centre_x = 640.f;
-		constexpr f32 centre_y = 330.f;
-		constexpr f32 cover_w = 300.f;
-		constexpr f32 cover_h = cover_w * c_cover_h / c_cover_w;
-		constexpr int strips = 14;
-
-		struct placement
+		// Where each case goes: the selected one faces the screen, turned by the
+		// right stick and swaying a little by itself; the others turn away to
+		// their side, pushed back and stacked. In the game's menu the selected
+		// one comes forward on the left and the others leave
+		const auto pose_of = [&](s32 index) -> case_pose
 		{
-			f32 x_left, x_right; // the edges on screen
-			f32 h_left, h_right; // their heights
-			f32 shade;           // brightness
-			f32 alpha;
-		};
-
-		const auto place_cover = [&](f32 d) -> placement
-		{
+			const f32 d = index - m_flow_pos;
 			const f32 side = d < 0.f ? -1.f : 1.f;
 			const f32 a = std::abs(d);
 			const f32 t = std::min(a, 1.f);
 			const f32 e = t * t * (3.f - 2.f * t);
 
-			const f32 scale = 1.f - 0.14f * e;
-			const f32 width = cover_w * scale * (1.f - 0.32f * e);
-			const f32 skew = 0.05f * e; // the far edge's loss of height, each end
-			const f32 offset = 300.f * e + std::max(0.f, a - 1.f) * 88.f;
-			const f32 mid_x = centre_x + side * offset;
+			case_pose pose;
+			pose.at = {side * (330.f * e + std::max(0.f, a - 1.f) * 120.f), 0.f, 150.f * e + std::max(0.f, a - 1.f) * 30.f};
+			pose.yaw = -side * 58.f * c_deg * e;
+			pose.alpha = std::clamp(4.6f - a, 0.f, 1.f);
 
-			placement p{};
-			p.x_left = mid_x - width / 2.f;
-			p.x_right = mid_x + width / 2.f;
-			const f32 near_h = cover_h * scale;
-			const f32 far_h = near_h * (1.f - 2.f * skew);
-			// The edge nearer the middle stays tall
-			p.h_left = side > 0.f ? near_h : far_h;
-			p.h_right = side > 0.f ? far_h : near_h;
-			p.shade = 1.f - 0.45f * e - 0.06f * std::max(0.f, a - 1.f);
-			p.alpha = std::clamp(4.6f - a, 0.f, 1.f);
-			return p;
+			// The selected one's own turn fades in as it reaches the middle
+			const f32 own = 1.f - e;
+			pose.yaw += own * m_cover_yaw;
+			pose.pitch += own * m_cover_pitch;
+
+			if (index == m_selected)
+			{
+				pose.at = pose.at + vec3{-330.f, 6.f, -170.f} * detail;
+			}
+			else
+			{
+				pose.at.x += side * 500.f * detail;
+				pose.alpha *= 1.f - detail;
+			}
+			pose.floor_y = floor_y;
+			return pose;
 		};
 
-		// A strip mesh of the cover between its edges, its texture spread as a
-		// turned plane spreads it (perspective-correct across the width)
-		const auto add_face = [&](const image_info_base* image, const placement& p, f32 y_mid, f32 v_top, f32 v_bottom, f32 top_frac, f32 bottom_frac, const color4f& color, bool mirrored)
+		const std::vector<case_face> faces = case_faces();
+		constexpr color4f plastic{0.07f, 0.08f, 0.12f, 1.f};
+
+		// A face as one triangle strip over a grid (rows joined by repeated
+		// vertices), fine enough that the texture follows the perspective
+		const auto add_face = [&](const image_info_base* image, const case_pose& pose, const case_face& face, int cols, int rows, f32 b0, f32 b1, const color4f& color)
 		{
 			compiled_resource::command cmd;
-			cmd.config.set_image_resource(image_resource_id::raw_image);
-			cmd.config.external_data_ref = image;
+			if (face.textured && image)
+			{
+				cmd.config.set_image_resource(image_resource_id::raw_image);
+				cmd.config.external_data_ref = image;
+			}
 			cmd.config.color = color;
 			cmd.config.primitives = primitive_type::triangle_strip;
 			cmd.config.disable_vertex_snap = true;
 
-			for (int i = 0; i <= strips; i++)
+			const auto point = [&](f32 a, f32 b)
 			{
-				const f32 s = static_cast<f32>(i) / strips;
-				const f32 x = p.x_left + (p.x_right - p.x_left) * s;
-				const f32 h = p.h_left + (p.h_right - p.h_left) * s;
-				const f32 u = s * p.h_right / ((1.f - s) * p.h_left + s * p.h_right);
-				// This face spans [top_frac, bottom_frac] of the cover's height,
-				// measured from its middle line
-				const f32 y0 = mirrored ? y_mid + h / 2.f + h * top_frac : y_mid - h / 2.f + h * top_frac;
-				const f32 y1 = mirrored ? y_mid + h / 2.f + h * bottom_frac : y_mid - h / 2.f + h * bottom_frac;
-				vertex top, bottom;
-				top.vec4(x, y0, u, v_top);
-				bottom.vec4(x, y1, u, v_bottom);
-				cmd.verts.push_back(top);
-				cmd.verts.push_back(bottom);
+				const vec3 local = face.origin + face.edge_a * a + face.edge_b * b;
+				f32 x, y;
+				project(to_world(pose, local), x, y);
+				vertex v;
+				v.vec4(x, y, face.u0 + (face.u1 - face.u0) * a, face.v0 + (face.v1 - face.v0) * b);
+				return v;
+			};
+
+			for (int r = 0; r < rows; r++)
+			{
+				const f32 bt = b0 + (b1 - b0) * r / rows;
+				const f32 bb = b0 + (b1 - b0) * (r + 1) / rows;
+				if (r > 0)
+				{
+					// Join the rows with two degenerate triangles
+					cmd.verts.push_back(cmd.verts.back());
+					cmd.verts.push_back(point(0.f, bt));
+				}
+				for (int c = 0; c <= cols; c++)
+				{
+					const f32 a = static_cast<f32>(c) / cols;
+					cmd.verts.push_back(point(a, bt));
+					cmd.verts.push_back(point(a, bb));
+				}
 			}
 
 			compiled_resource part;
@@ -1945,7 +2088,22 @@ namespace rsx::overlays
 			result.add(part);
 		};
 
-		// Far ones first, the middle one last
+		const auto facing = [&](const case_pose& pose, const case_face& face)
+		{
+			// Seen when it faces the eye (at the origin's front, -focal on z)
+			const vec3 n = turn(pose, face.normal);
+			const vec3 p = to_world(pose, face.origin + face.edge_a * 0.5f + face.edge_b * 0.5f);
+			const vec3 eye_to = {p.x, p.y, p.z + c_focal};
+			return dot(pose.mirrored ? vec3{n.x, -n.y, n.z} : n, eye_to) < 0.f;
+		};
+
+		const auto lit = [&](const case_pose& pose, const case_face& face) -> f32
+		{
+			const vec3 n = turn(pose, face.normal);
+			return 0.4f + 0.6f * std::max(0.f, dot(n, c_light));
+		};
+
+		// Far ones first, the selected one last
 		std::vector<s32> order;
 		for (s32 i = 0; i < static_cast<s32>(m_games.size()); i++)
 		{
@@ -1954,79 +2112,71 @@ namespace rsx::overlays
 				order.push_back(i);
 			}
 		}
-		std::sort(order.begin(), order.end(), [&](s32 a, s32 b) { return std::abs(a - m_flow_pos) > std::abs(b - m_flow_pos); });
+		std::sort(order.begin(), order.end(), [&](s32 a, s32 b)
+		{
+			if (a == m_selected && m_detail_t > 0.f) return false;
+			if (b == m_selected && m_detail_t > 0.f) return true;
+			return std::abs(a - m_flow_pos) > std::abs(b - m_flow_pos);
+		});
 
 		for (const s32 i : order)
 		{
-			const ps5_launcher_game& game = m_games[i];
-			const image_info_base* cover = game.cover();
-			if (!cover)
+			const image_info_base* cover = m_games[i].cover();
+			case_pose pose = pose_of(i);
+			if (pose.alpha <= 0.f)
 			{
 				continue;
 			}
+			const bool near_middle = std::abs(i - m_flow_pos) < 1.5f;
+			const int cols = near_middle ? 14 : 8;
 
-			const f32 d = i - m_flow_pos;
-			const placement p = place_cover(d);
-			if (p.alpha <= 0.f)
+			// Its reflection: the faces toward us, mirrored in the floor and
+			// fading downward in bands (only the case's foot shows)
+			case_pose mirror = pose;
+			mirror.mirrored = true;
+			for (const case_face& face : faces)
 			{
-				continue;
-			}
-
-			// The reflection on the floor: the cover's foot, mirrored, fading
-			// out in bands
-			constexpr int bands = 6;
-			constexpr f32 depth = 0.3f;
-			for (int b = 0; b < bands; b++)
-			{
-				const f32 f0 = depth * b / bands;
-				const f32 f1 = depth * (b + 1) / bands;
-				const f32 fade = 0.2f * (1.f - (b + 0.5f) / bands);
-				add_face(cover, p, centre_y + 4.f, 1.f - f0, 1.f - f1, f0, f1, color4f(p.shade, p.shade, p.shade, fade * p.alpha), true);
-			}
-
-			// The glow and the ring of the middle one
-			const f32 focus = std::clamp(1.f - std::abs(d) * 2.f, 0.f, 1.f);
-			if (focus > 0.f)
-			{
-				const f32 w = p.x_right - p.x_left;
-				const f32 h = std::max(p.h_left, p.h_right);
-				for (int g = 3; g >= 1; g--)
+				if (!facing(mirror, face) || face.normal.y != 0.f)
 				{
-					rounded_rect halo;
-					halo.set_pos(static_cast<s16>(p.x_left - g * 6), static_cast<s16>(centre_y - h / 2.f - g * 6));
-					halo.set_size(static_cast<u16>(w + g * 12), static_cast<u16>(h + g * 12));
-					halo.border_radius = static_cast<u16>(10 + g * 6);
-					halo.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, 0.07f * focus);
-					result.add(halo.get_compiled());
+					continue;
+				}
+				const f32 shade = lit(pose, face);
+				constexpr int bands = 5;
+				for (int b = 0; b < bands; b++)
+				{
+					const f32 f0 = 1.f - 0.32f * b / bands;
+					const f32 f1 = 1.f - 0.32f * (b + 1) / bands;
+					const f32 fade = 0.22f * (1.f - (b + 0.5f) / bands) * pose.alpha;
+					const color4f base = face.textured ? color4f(shade, shade, shade, fade) : color4f(plastic.r * shade, plastic.g * shade, plastic.b * shade, fade);
+					add_face(cover, mirror, face, cols, 1, f1, f0, base);
 				}
 			}
 
-			if (focus > 0.f)
+			// The case
+			for (const case_face& face : faces)
 			{
-				// The rim: filled, behind the face (see m_highlight)
-				rounded_rect rim;
-				const f32 w = p.x_right - p.x_left;
-				const f32 h = std::max(p.h_left, p.h_right);
-				rim.set_pos(static_cast<s16>(std::lround(p.x_left - 3)), static_cast<s16>(std::lround(centre_y - h / 2.f - 3)));
-				rim.set_size(static_cast<u16>(std::lround(w + 6)), static_cast<u16>(std::lround(h + 6)));
-				rim.border_radius = 6;
-				rim.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, focus);
-				result.add(rim.get_compiled());
+				if (!facing(pose, face))
+				{
+					continue;
+				}
+				const f32 shade = lit(pose, face);
+				if (face.textured)
+				{
+					const f32 s = face.normal.x != 0.f ? shade * 0.75f : shade;
+					add_face(cover, pose, face, face.normal.x != 0.f ? 1 : cols, face.normal.x != 0.f ? 6 : cols, 0.f, 1.f, color4f(s, s, s, pose.alpha));
+				}
+				else
+				{
+					add_face(cover, pose, face, 1, 1, 0.f, 1.f, color4f(plastic.r * shade * 2.f, plastic.g * shade * 2.f, plastic.b * shade * 2.f, pose.alpha));
+				}
 			}
-
-			add_face(cover, p, centre_y, 0.f, 1.f, 0.f, 1.f, color4f(p.shade, p.shade, p.shade, p.alpha), false);
 		}
 
-		// The selected game: its name and what it is, under the row
+		// Under the row: the selected game's name and what it is (leaving as
+		// the menu comes in)
 		if (m_selected >= 0 && static_cast<usz>(m_selected) < m_games.size())
 		{
 			const big_picture_game_info& info = m_games[m_selected].info;
-
-			label name;
-			style_label(name, "", 22, f_semibold, c_text);
-			fit_text(name, info.name.empty() ? info.serial : info.name, 1000);
-			place(name, static_cast<s16>(640 - name.w / 2), 586.f);
-			result.add(name.get_compiled());
 
 			std::vector<std::string> facts;
 			if (!info.serial.empty()) facts.push_back(info.serial);
@@ -2035,57 +2185,150 @@ namespace rsx::overlays
 			else if (info.category == "HG") facts.push_back("Digital");
 			if (!info.app_ver.empty() && info.app_ver != "Unknown") facts.push_back("v" + info.app_ver);
 			const bool own_settings = !info.serial.empty() && fs::is_file(rpcs3::utils::get_custom_config_path(info.serial));
+			const std::string name_text = info.name.empty() ? info.serial : info.name;
 
-			// The facts, then a chip when the game has settings of its own,
-			// centred together
-			std::vector<std::unique_ptr<label>> parts;
-			f32 total = 0.f;
-			for (usz i = 0; i < facts.size(); i++)
+			if (detail < 1.f)
 			{
-				if (i)
+				compiled_resource caption;
+
+				label name;
+				style_label(name, "", 22, f_semibold, c_text);
+				fit_text(name, name_text, 1000);
+				place(name, static_cast<s16>(640 - name.w / 2), 596.f);
+				caption.add(name.get_compiled());
+
+				std::vector<std::unique_ptr<label>> parts;
+				for (usz i = 0; i < facts.size(); i++)
 				{
-					parts.push_back(make_label("\u00b7", 12, f_medium, c_text_dim));
+					if (i) parts.push_back(make_label("·", 12, f_medium, c_text_dim));
+					parts.push_back(make_label(facts[i], 12, f_medium, c_text_dim));
 				}
-				parts.push_back(make_label(facts[i], 12, f_medium, c_text_dim));
-			}
-			for (usz i = 0; i < parts.size(); i++)
-			{
-				total += parts[i]->w + (i ? 10 : 0);
-			}
-			std::unique_ptr<label> chip_text;
-			if (own_settings)
-			{
-				chip_text = make_label("Own settings", 10, f_semibold, c_accent);
-				total += 16 + chip_text->w + 24;
+				std::unique_ptr<label> chip_text;
+				f32 total = 0.f;
+				for (usz i = 0; i < parts.size(); i++) total += parts[i]->w + (i ? 10 : 0);
+				if (own_settings)
+				{
+					chip_text = make_label("Own settings", 10, f_semibold, c_accent);
+					total += 16 + chip_text->w + 24;
+				}
+				f32 x = 640.f - total / 2.f;
+				for (usz i = 0; i < parts.size(); i++)
+				{
+					place(*parts[i], static_cast<s16>(std::lround(x)), 630.f);
+					caption.add(parts[i]->get_compiled());
+					x += parts[i]->w + (i + 1 < parts.size() ? 10 : 0);
+				}
+				if (chip_text)
+				{
+					x += 16;
+					rounded_rect chip;
+					chip.set_pos(static_cast<s16>(std::lround(x)), 618);
+					chip.set_size(static_cast<u16>(chip_text->w + 24), 24);
+					chip.border_radius = 12;
+					chip.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f);
+					caption.add(chip.get_compiled());
+					place(*chip_text, static_cast<s16>(std::lround(x + 12)), 630.f);
+					caption.add(chip_text->get_compiled());
+				}
+
+				label count;
+				style_label(count, fmt::format("%d / %d", m_selected + 1, m_games.size()), 11, f_medium, c_text_dim);
+				place(count, c_margin, c_hints_y);
+				caption.add(count.get_compiled());
+
+				add_animated(result, caption, 1.f - detail, 0.f, 20.f * detail);
 			}
 
-			f32 x = 640.f - total / 2.f;
-			for (usz i = 0; i < parts.size(); i++)
+			// The game's own menu, on the right
+			if (detail > 0.f)
 			{
-				place(*parts[i], static_cast<s16>(std::lround(x)), 620.f);
-				result.add(parts[i]->get_compiled());
-				x += parts[i]->w + (i + 1 < parts.size() ? 10 : 0);
-			}
-			if (chip_text)
-			{
-				x += 16;
-				rounded_rect chip;
-				chip.set_pos(static_cast<s16>(std::lround(x)), 608);
-				chip.set_size(static_cast<u16>(chip_text->w + 24), 24);
-				chip.border_radius = 12;
-				chip.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, 0.12f);
-				chip.border_size = 1;
-				chip.border_color = color4f(c_accent.r, c_accent.g, c_accent.b, 0.5f);
-				result.add(chip.get_compiled());
-				place(*chip_text, static_cast<s16>(std::lround(x + 12)), 620.f);
-				result.add(chip_text->get_compiled());
-			}
+				compiled_resource menu;
+				constexpr s16 left = 690;
+				constexpr u16 width = 500;
 
-			// Where in the list, bottom left
-			label count;
-			style_label(count, fmt::format("%d / %d", m_selected + 1, m_games.size()), 11, f_medium, c_text_dim);
-			place(count, c_margin, c_hints_y);
-			result.add(count.get_compiled());
+				auto kicker = make_label(spaced(fmt::format("%s%s", region_of(info.serial).empty() ? "PS3" : region_of(info.serial), info.category == "HG" ? "  DIGITAL" : info.category == "DG" ? "  DISC" : "")), 10, f_semibold, c_text_dim);
+				place(*kicker, left, 150.f);
+				menu.add(kicker->get_compiled());
+
+				label title;
+				title.set_font(30, f_bold);
+				title.fore_color = c_text;
+				title.back_color.a = 0.f;
+				title.set_padding(0);
+				title.set_wrap_text(true);
+				title.set_text(name_text);
+				title.set_pos(left - 1, 166);
+				title.set_size(width, 110);
+				title.auto_resize(false, width, 110);
+				menu.add(title.get_compiled());
+
+				f32 y = title.y + title.h + 22.f;
+				{
+					std::vector<std::string> chips;
+					if (!info.serial.empty()) chips.push_back(info.serial);
+					if (!info.app_ver.empty() && info.app_ver != "Unknown") chips.push_back("Version " + info.app_ver);
+					if (own_settings) chips.push_back("Own settings");
+					f32 x = left;
+					for (const std::string& text : chips)
+					{
+						const bool accent = text == "Own settings";
+						auto chip_label = make_label(text, 10, f_medium, accent ? c_accent : c_text);
+						rounded_rect chip;
+						chip.set_pos(static_cast<s16>(x), static_cast<s16>(y));
+						chip.set_size(static_cast<u16>(chip_label->w + 28), 24);
+						chip.border_radius = 12;
+						chip.back_color = accent ? color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f) : color4f(1.f, 1.f, 1.f, 0.1f);
+						menu.add(chip.get_compiled());
+						place(*chip_label, static_cast<s16>(x + 14), y + 12.f);
+						menu.add(chip_label->get_compiled());
+						x += chip.w + 8;
+					}
+				}
+
+				// The options
+				y += 56.f;
+				const char* options[] = {"Play", "Game settings", "Delete game", "Back to library"};
+				const char* notes[] = {"Start the game", "Its own settings, over the global ones", "Remove its files from the console", ""};
+				for (int o = 0; o < 4; o++)
+				{
+					const bool selected = o == m_detail_option;
+					const f32 row_y = y + o * 58.f;
+					if (selected)
+					{
+						rounded_rect bar;
+						bar.set_pos(left - 16, static_cast<s16>(row_y));
+						bar.set_size(width, 50);
+						bar.border_radius = 14;
+						bar.back_color = color4f(1.f, 1.f, 1.f, 0.12f);
+						menu.add(bar.get_compiled());
+
+						rounded_rect mark;
+						mark.set_pos(left - 16, static_cast<s16>(row_y + 12));
+						mark.set_size(4, 26);
+						mark.border_radius = 2;
+						mark.back_color = c_accent;
+						menu.add(mark.get_compiled());
+					}
+
+					auto text = make_label(options[o], 15, selected ? f_semibold : f_medium, selected ? c_text : c_text_dim);
+					place(*text, left + 6, row_y + (notes[o][0] && selected ? 18.f : 25.f));
+					menu.add(text->get_compiled());
+					if (selected && notes[o][0])
+					{
+						auto note = make_label(notes[o], 10, f_regular, c_text_dim);
+						place(*note, left + 6, row_y + 36.f);
+						menu.add(note->get_compiled());
+					}
+					if (selected)
+					{
+						auto chevron = make_label("›", 18, f_semibold, c_accent);
+						place(*chevron, static_cast<s16>(left - 16 + width - 30), row_y + 25.f);
+						menu.add(chevron->get_compiled());
+					}
+				}
+
+				add_animated(result, menu, detail, 40.f * (1.f - detail), 0.f);
+			}
 		}
 	}
 
@@ -2135,11 +2378,50 @@ namespace rsx::overlays
 			}
 		}
 
+		// The right stick, as it is now (read before taking this dialog's lock:
+		// the input thread takes the pads' lock, then this one)
+		f32 stick_x = 0.f, stick_y = 0.f;
+		if (m_tab == tab::library)
+		{
+			std::lock_guard pad_lock(pad::g_pad_mutex);
+			if (const auto handler = pad::get_pad_thread(true))
+			{
+				for (const auto& pad : handler->GetPads())
+				{
+					if (!pad || !pad->is_connected())
+					{
+						continue;
+					}
+					for (const AnalogStickExternal& stick : pad->m_sticks_external)
+					{
+						const f32 value = (static_cast<f32>(stick.m_value) - 128.f) / 127.f;
+						const f32 live = std::abs(value) < 0.12f ? 0.f : value;
+						if (stick.m_offset == CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X) stick_x = live;
+						if (stick.m_offset == CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y) stick_y = live;
+					}
+					break;
+				}
+			}
+		}
+
 		{
 			// The Library's row eases toward the selection
 			std::lock_guard lock(m_mutex);
 			const f32 dt = m_last_update_us ? std::min(0.1f, (timestamp_us - m_last_update_us) / 1'000'000.f) : 0.f;
 			m_last_update_us = timestamp_us;
+
+			// The game's menu opens and closes over 0.45 s
+			m_detail_t = std::clamp(m_detail_t + (m_detail ? dt : -dt) / 0.45f, 0.f, 1.f);
+
+			// The selected case: the stick turns it (up to 50 degrees across,
+			// 28 up and down); left alone it sways a little
+			m_sway_time += dt;
+			constexpr f32 deg = 3.14159265f / 180.f;
+			const f32 target_yaw = stick_x * 50.f * deg + std::sin(m_sway_time * 0.7f) * 7.f * deg * (1.f - std::abs(stick_x));
+			const f32 target_pitch = stick_y * 28.f * deg + std::sin(m_sway_time * 0.5f) * 2.5f * deg * (1.f - std::abs(stick_y));
+			const f32 follow = 1.f - std::exp(-dt * 9.f);
+			m_cover_yaw += (target_yaw - m_cover_yaw) * follow;
+			m_cover_pitch += (target_pitch - m_cover_pitch) * follow;
 			const f32 target = static_cast<f32>(m_selected);
 			m_flow_pos += (target - m_flow_pos) * (1.f - std::exp(-dt * 11.f));
 			if (std::abs(target - m_flow_pos) < 0.001f)
@@ -2301,7 +2583,10 @@ namespace rsx::overlays
 			add_animated(result, art, step(0.f, 0.7f));
 		}
 		result.add(m_wash.get_compiled());
-		result.add(m_fade_left.get_compiled());
+		if (m_tab != tab::library || m_gs_open)
+		{
+			result.add(m_fade_left.get_compiled());
+		}
 		result.add(m_fade_top.get_compiled());
 		result.add(m_fade_bottom.get_compiled());
 
