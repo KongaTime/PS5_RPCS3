@@ -73,6 +73,12 @@ bool ps5_load_code_copy(const char* path);
 // ps5_terminate.cpp
 void ps5_set_terminate_handler();
 
+// ps5_localized.cpp (localized_strings.py): the English, or nullptr
+const char* ps5_localized_string(localized_string_id id);
+
+// Emu/RSX/Overlays/overlay_utils.cpp
+std::u32string utf8_to_u32string(std::string_view utf8_string);
+
 namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
@@ -526,8 +532,23 @@ namespace
 		g_emu_callbacks.enable_disc_insert = [](bool) {};
 		g_emu_callbacks.handle_taskbar_progress = [](s32, s32) {};
 
-		g_emu_callbacks.get_localized_string = [](localized_string_id, const char*) -> std::string { return {}; };
-		g_emu_callbacks.get_localized_u32string = [](localized_string_id, const char*) -> std::u32string { return {}; };
+		// The English the desktop's native dialogs show (rpcs3qt/localized_emu.h),
+		// its %0 given the argument: with none, the save data list's button
+		// prompts had no words (on my console)
+		g_emu_callbacks.get_localized_string = [](localized_string_id id, const char* args) -> std::string
+		{
+			const char* text = ps5_localized_string(id);
+			std::string result = text ? text : "";
+			if (const usz at = result.find("%0"); at != umax && args)
+			{
+				result.replace(at, 2, args);
+			}
+			return result;
+		};
+		g_emu_callbacks.get_localized_u32string = [](localized_string_id id, const char* args) -> std::u32string
+		{
+			return utf8_to_u32string(g_emu_callbacks.get_localized_string(id, args));
+		};
 		g_emu_callbacks.get_localized_setting = [](const cfg::_base*, u32) -> std::string { return {}; };
 		g_emu_callbacks.get_photo_path = [](std::string_view title) -> std::string
 		{

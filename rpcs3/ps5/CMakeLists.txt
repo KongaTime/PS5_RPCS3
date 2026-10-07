@@ -22,6 +22,14 @@ add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ps5_icons.cpp
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/embed_files.py ${ps5_icon_files}
     VERBATIM)
 target_sources(rpcs3_ps5 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ps5_icons.cpp)
+
+# RPCS3's English strings for its native dialogs, read from the desktop's
+# rpcs3qt/localized_emu.h without Qt (localized_strings.py)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ps5_localized.cpp
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/localized_strings.py ${CMAKE_CURRENT_SOURCE_DIR}/../rpcs3qt/localized_emu.h ${CMAKE_CURRENT_BINARY_DIR}/ps5_localized.cpp
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/localized_strings.py ${CMAKE_CURRENT_SOURCE_DIR}/../rpcs3qt/localized_emu.h
+    VERBATIM)
+target_sources(rpcs3_ps5 PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/ps5_localized.cpp)
 target_include_directories(rpcs3_ps5 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(rpcs3_ps5 PUBLIC rpcs3_emu 3rdparty::fusion 3rdparty::zlib) # Fusion: the pad thread's motion filter; zlib: the SCE decrypter (firmware)

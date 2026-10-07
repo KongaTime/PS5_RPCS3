@@ -123,6 +123,12 @@ void ps5_pad_handler::process()
 	rpcs3_ps5_pad state[rpcs3_ps5_pad_players]{};
 	g_poll_pads(state);
 
+	// The pads connected, which the pad thread reports as now_connect: RPCS3's
+	// native dialogs read no pad while it is 0 (overlays.cpp, run_input_loop),
+	// and the save data list took no button (the Ratchet & Clank Collection,
+	// on my console). Games read the pads without it
+	u32 connected = 0;
+
 	for (usz player = 0; player < m_pads.size(); player++)
 	{
 		const std::shared_ptr<Pad>& pad = m_pads[player];
@@ -151,6 +157,7 @@ void ps5_pad_handler::process()
 		{
 			continue;
 		}
+		connected++;
 
 		for (Button& button : pad->m_buttons)
 		{
@@ -206,4 +213,6 @@ void ps5_pad_handler::process()
 		pad->m_sticks[2].m_value = axis_to_ps3(in.right_x);
 		pad->m_sticks[3].m_value = axis_to_ps3(in.right_y);
 	}
+
+	connected_devices = connected;
 }
