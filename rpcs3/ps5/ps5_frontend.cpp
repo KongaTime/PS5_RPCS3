@@ -103,6 +103,85 @@ namespace
 		}
 	}
 
+	// The PS3's threads' loads, sampled. The console reports no CPU time per
+	// thread or for the process: a thread's CPU clock runs with the wall clock
+	// whether the thread works or waits (the performance overlay read 18/16,
+	// 6/16 and 1/16 for 18 PPU, 6 SPU and 1 RSX threads, on my console), and
+	// times() counts one thread. So a thread samples, 500 times a second,
+	// which PPU and SPU threads are running rather than waiting, stopped or
+	// suspended, from the state they keep themselves
+	struct sampled_load
+	{
+		std::string name;
+		u32 running = 0;
+		u32 samples = 0;
+	};
+
+	std::mutex g_loads_lock;
+	std::map<u64, sampled_load> g_loads;     // by group (PPU 0, SPU 1) and id, since the last report
+	atomic_t<f32> g_group_load[2]{};         // each group's threads running, as a share of the hardware threads, smoothed over about a second
+
+	bool is_running(const cpu_thread& thread)
+	{
+		return !(thread.state & (cpu_flag::wait + cpu_flag::stop + cpu_flag::exit + cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause));
+	}
+
+	void sample_thread_loads()
+	{
+		u32 running[2]{};
+		std::lock_guard lock(g_loads_lock);
+		const auto sample = [&](u32 group, u32 id, const cpu_thread& thread, auto&& name)
+		{
+			sampled_load& load = g_loads[u64{group} << 32 | id];
+			if (load.name.empty())
+			{
+				load.name = name();
+			}
+			const bool busy = is_running(thread);
+			load.running += busy;
+			load.samples++;
+			running[group] += busy;
+		};
+		idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
+		{
+			sample(0, id, ppu, [&] { return "PPU " + ppu.get_name(); });
+		});
+		idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
+		{
+			sample(1, id, spu, [&] { return "SPU " + spu.get_name(); });
+		});
+		const f32 hardware = static_cast<f32>(std::max<u32>(1, utils::get_thread_count()));
+		for (u32 group = 0; group < 2; group++)
+		{
+			const f32 now = 100.f * running[group] / hardware;
+			g_group_load[group].store(g_group_load[group].load() * 0.996f + now * 0.004f);
+		}
+	}
+
+	// The busiest since the last call, a share of the time each ran, and the counts begun again
+	std::string ps5_take_thread_loads()
+	{
+		std::vector<std::pair<f64, std::string>> loads;
+		{
+			std::lock_guard lock(g_loads_lock);
+			for (auto& [key, load] : g_loads)
+			{
+				if (load.samples)
+				{
+					loads.emplace_back(100.0 * load.running / load.samples, load.name);
+				}
+			}
+			g_loads.clear();
+		}
+		std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+		std::string result;
+		for (usz i = 0; i < loads.size() && i < 10 && loads[i].first >= 5.0; i++)
+		{
+			fmt::append(result, " [%s %.0f%%]", loads[i].second, loads[i].first);
+		}
+		return result;
+	}
+
 	// Every file and folder under path made readable and writable by all, and
 	// each folder searchable: what the title writes is otherwise the title's
 	// alone, and FTP could read config.yml but not replace or delete it
@@ -975,6 +1054,19 @@ int run(const char* boot_path)
 			trace("frontend: booted; running until the emulation stops");
 			g_booted = true;
 
+			// The PS3's threads' loads, 500 times a second (sample_thread_loads)
+			named_thread sampler("PS5 Load Sampler", []()
+			{
+				while (thread_ctrl::state() != thread_state::aborting)
+				{
+					thread_ctrl::wait_for(2'000);
+					if (!Emu.IsStopped())
+					{
+						sample_thread_loads();
+					}
+				}
+			});
+
 			// Every five seconds, in the trace: the emulation's state, the frames
 			// RSX flipped, and where the PPU threads are, to tell a stall from slow
 			named_thread status("PS5 Status", []()
@@ -988,40 +1080,10 @@ int run(const char* boot_path)
 					}
 					const auto render = rsx::get_current_renderer();
 
-					// The busiest of the PS3's threads over these five seconds, each
-					// as a share of one core: one thread at 100% holds the game
-					// back however low the total is (the console's process total
-					// counts one thread's time)
-					std::string busiest;
+					// The busiest of the PS3's threads over these five seconds
+					if (const std::string busiest = ps5_take_thread_loads(); !busiest.empty())
 					{
-						static std::map<std::pair<bool, u32>, u64> s_last_ns;
-						std::vector<std::pair<f64, std::string>> loads;
-						const auto measure = [&](bool spu, u32 id, u64 ns, std::string name)
-						{
-							u64& last = s_last_ns[{spu, id}];
-							if (last && ns > last)
-							{
-								loads.emplace_back((ns - last) / 50'000'000.0, std::move(name));
-							}
-							last = ns;
-						};
-						idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
-						{
-							measure(false, id, thread_ctrl::get_cpu_time_ns(ppu), "PPU " + ppu.get_name());
-						});
-						idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
-						{
-							measure(true, id, thread_ctrl::get_cpu_time_ns(spu), "SPU " + spu.get_name());
-						});
-						std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
-						for (usz i = 0; i < loads.size() && i < 8 && loads[i].first >= 5.0; i++)
-						{
-							fmt::append(busiest, " [%s %.0f%%]", loads[i].second, loads[i].first);
-						}
-					}
-					if (!busiest.empty())
-					{
-						trace("busiest threads (%% of one core):%s", busiest);
+						trace("busiest threads (share of the time each was running):%s", busiest);
 					}
 
 					std::string ppus;
@@ -1107,3 +1169,10 @@ int run(const char* boot_path)
 	return status;
 }
 } // namespace
+
+// The performance overlay's PPU (0) and SPU (1) loads on the console: their
+// threads running, as a share of the hardware threads (ps5_frontend.cpp)
+f32 ps5_sampled_load(u32 group)
+{
+	return group < 2 ? g_group_load[group].load() : 0.f;
+}
