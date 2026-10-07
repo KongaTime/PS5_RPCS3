@@ -7,6 +7,7 @@ add_library(rpcs3_ps5 STATIC
     ps5_gs_frame.cpp
     ps5_pad_handler.cpp
     ps5_firmware.cpp
+    ps5_terminate.cpp
     ../Input/pad_thread.cpp
     ../Input/product_info.cpp
     ../Input/ps_move_config.cpp
@@ -15,3 +16,6 @@ add_library(rpcs3_ps5 STATIC
 )
 target_link_libraries(rpcs3_ps5 PUBLIC rpcs3_emu 3rdparty::fusion 3rdparty::zlib) # Fusion: the pad thread's motion filter; zlib: the SCE decrypter (firmware)
 target_compile_options(rpcs3_ps5 PRIVATE "SHELL:-include ${PS5_VOLK_DIR}/volk.h")
+# std::terminate's report rethrows the exception for its message: the one unit
+# built with exceptions (ps5_terminate.cpp)
+set_source_files_properties(ps5_terminate.cpp PROPERTIES COMPILE_OPTIONS "-fexceptions")

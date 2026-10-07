@@ -65,6 +65,9 @@ LOG_CHANNEL(ps5_log, "PS5");
 // Utilities/Thread.cpp, on the PS5
 bool ps5_load_code_copy(const char* path);
 
+// ps5_terminate.cpp
+void ps5_set_terminate_handler();
+
 namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
@@ -547,6 +550,7 @@ int run(const char* boot_path)
 {
 	trace("frontend: start");
 	record_signals();
+	ps5_set_terminate_handler();
 
 	// What RPCS3 writes from here on is open to FTP (files 0666, folders 0777),
 	// and what earlier runs wrote is opened now
