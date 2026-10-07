@@ -17,9 +17,11 @@
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
 #include "Utilities/File.h"
+#include "Utilities/StrUtil.h"
 #include "Utilities/Thread.h"
 
 #include <algorithm>
+#include <cctype>
 
 LOG_CHANNEL(launcher_log, "Launcher");
 
@@ -27,30 +29,72 @@ namespace rsx::overlays
 {
 	namespace
 	{
-		using text_align = overlay_element::text_align;
-
 		// The design's palette
 		const color4f c_text{1.f, 1.f, 1.f, 1.f};
-		const color4f c_text_dim{1.f, 1.f, 1.f, 0.7f};
-		const color4f c_accent{0.35f, 0.85f, 0.95f, 1.f};
+		const color4f c_text_dim{1.f, 1.f, 1.f, 0.68f};
+		const color4f c_accent{0.40f, 0.87f, 0.95f, 1.f};
 		const color4f c_button{0.96f, 0.93f, 0.87f, 1.f};
-		const color4f c_button_text{0.08f, 0.08f, 0.1f, 1.f};
-		const color4f c_chip{1.f, 1.f, 1.f, 0.14f};
-		const color4f c_backdrop{0.03f, 0.04f, 0.09f, 1.f};
+		const color4f c_button_text{0.06f, 0.06f, 0.08f, 1.f};
+		const color4f c_glass{0.02f, 0.03f, 0.07f, 0.42f};
+		const color4f c_glass_border{1.f, 1.f, 1.f, 0.22f};
+		const color4f c_backdrop{0.02f, 0.03f, 0.08f, 1.f};
 
-		// The games row: ICON0.PNG is 320x176
-		constexpr s16 c_row_x = 40;
-		constexpr s16 c_row_y = 520;
-		constexpr u16 c_tile_w = 226;
-		constexpr u16 c_tile_h = 124;
-		constexpr u16 c_tile_gap = 14;
+		// The title's fonts (/app0/assets/fonts, the frontend's font folder);
+		// characters they lack come from the PS3's own font
+		constexpr std::string_view f_regular = "Inter-Regular";
+		constexpr std::string_view f_medium = "Inter-Medium";
+		constexpr std::string_view f_semibold = "Inter-SemiBold";
+		constexpr std::string_view f_bold = "Inter-Bold";
+
+		// The overlays' 1280x720 space: margins, the top bar's middle line, the hero's left edge
+		constexpr s16 c_margin = 40;
+		constexpr s16 c_right = 1240;
+		constexpr s16 c_bar_y = 36;
+		constexpr s16 c_hero_x = 64;
+
+		// The games row: five tiles across the margins. ICON0.PNG is 320x176
+		constexpr s16 c_row_y = 500;
+		constexpr u16 c_tile_w = 232;
+		constexpr u16 c_tile_h = 128;
+		constexpr u16 c_tile_gap = 10;
+		constexpr u16 c_tile_radius = 8;
 		constexpr s32 c_visible_tiles = 5;
+
+		// The hints' line, bottom right
+		constexpr s16 c_hints_y = 690;
 
 		// Tab pages' area, below the top bar
 		constexpr s16 c_page_x = 40;
 		constexpr s16 c_page_y = 100;
 		constexpr u16 c_page_w = 1200;
 		constexpr u16 c_page_h = 520;
+
+		// A new game's art fades in over the last one's
+		constexpr u64 c_background_fade_us = 220'000;
+
+		// An image with rounded corners: the overlays' rounded-box SDF, which the
+		// shader applies to sampled images as to flat colour
+		struct rounded_image : public image_view
+		{
+			u16 border_radius = 0;
+
+			compiled_resource& get_compiled() override
+			{
+				if (is_compiled())
+				{
+					return compiled_resources;
+				}
+
+				image_view::get_compiled();
+				if (!compiled_resources.draw_commands.empty())
+				{
+					auto& config = compiled_resources.draw_commands.front().config;
+					configure_sdf(config, sdf_function::rounded_box);
+					config.sdf_config.br = std::min({static_cast<f32>(border_radius), config.sdf_config.hx, config.sdf_config.hy});
+				}
+				return compiled_resources;
+			}
+		};
 
 		void boot_game(std::string path, std::string title_id)
 		{
@@ -82,7 +126,7 @@ namespace rsx::overlays
 			if (fs::file file{path})
 			{
 				std::string name = file.to_string();
-				name = name.substr(0, name.find_first_of("\r\n"));
+				name = name.substr(0, name.find_first_of(std::string_view("\r\n\0", 3)));
 				if (!name.empty())
 				{
 					return name;
@@ -91,26 +135,91 @@ namespace rsx::overlays
 			return "User " + Emu.GetUsr();
 		}
 
-		std::unique_ptr<label> make_label(std::string_view text, u16 font_size, const color4f& color)
-		{
-			auto result = std::make_unique<label>(text);
-			result->set_font(font_size);
-			result->fore_color = color;
-			result->back_color.a = 0.f;
-			result->auto_resize();
-			return result;
-		}
-
-		void style_label(label& target, std::string_view text, u16 font_size, const color4f& color)
+		void style_label(label& target, std::string_view text, u16 font_size, std::string_view font_name, const color4f& color)
 		{
 			target.set_text(text);
-			target.set_font(font_size);
+			target.set_font(font_size, font_name);
 			target.fore_color = color;
 			target.back_color.a = 0.f;
+			target.set_padding(0);
 			target.auto_resize();
 		}
 
-		// "PLAYSTATION 3" with the design's wide letter spacing
+		std::unique_ptr<label> make_label(std::string_view text, u16 font_size, std::string_view font_name, const color4f& color)
+		{
+			auto result = std::make_unique<label>();
+			style_label(*result, text, font_size, font_name, color);
+			return result;
+		}
+
+		// The extents of what a text draws, from its baseline at 0 (y up is negative)
+		struct ink
+		{
+			f32 left = 0.f, right = 0.f, top = 0.f, bottom = 0.f;
+		};
+
+		ink measure_ink(font* renderer, std::u32string_view text)
+		{
+			const std::u32string copy(text);
+			const std::vector<vertex> verts = renderer->render_text(copy.c_str());
+			ink result{};
+			bool first = true;
+			for (const vertex& v : verts)
+			{
+				const f32 x = v.values[0];
+				const f32 y = v.values[1];
+				result.left = first ? x : std::min(result.left, x);
+				result.right = first ? x : std::max(result.right, x);
+				result.top = first ? y : std::min(result.top, y);
+				result.bottom = first ? y : std::max(result.bottom, y);
+				first = false;
+			}
+			return result;
+		}
+
+		// A label's top for its capitals to sit centred on mid_y: the font's 'H'
+		// decides, so labels in one line share a baseline whatever their letters
+		s16 cap_centred_y(const label& target, f32 mid_y)
+		{
+			font* renderer = target.get_font();
+			const ink cap = measure_ink(renderer, U"H");
+			// The label draws its baseline at its top plus the font's pixel size
+			return static_cast<s16>(std::lround(mid_y - renderer->get_size_px() - (cap.top + cap.bottom) / 2.f));
+		}
+
+		void place(label& target, s16 x, f32 mid_y)
+		{
+			target.set_pos(x, cap_centred_y(target, mid_y));
+		}
+
+		// Shortened with an ellipsis to fit max_w
+		void fit_text(label& target, std::string_view text, u16 max_w)
+		{
+			target.set_text(text);
+			target.auto_resize();
+			if (target.w <= max_w)
+			{
+				return;
+			}
+
+			std::u32string chars = utf8_to_u32string(text);
+			while (!chars.empty())
+			{
+				chars.pop_back();
+				while (!chars.empty() && chars.back() == U' ')
+				{
+					chars.pop_back();
+				}
+				target.set_unicode_text(chars + U"…");
+				target.auto_resize();
+				if (target.w <= max_w)
+				{
+					return;
+				}
+			}
+		}
+
+		// "WELCOME BACK" with the design's wide letter spacing
 		std::string spaced(std::string_view text)
 		{
 			std::string result;
@@ -118,9 +227,12 @@ namespace rsx::overlays
 			{
 				if (!result.empty())
 				{
-					result += ' ';
+					result += c == ' ' ? "  " : " ";
 				}
-				result += c;
+				if (c != ' ')
+				{
+					result += c;
+				}
 			}
 			return result;
 		}
@@ -140,6 +252,26 @@ namespace rsx::overlays
 
 			// The renderer's texture cache is keyed by address, which a freed image
 			// can hand on to the next: upload this one afresh
+			image->dirty = true;
+			return image;
+		}
+
+		// A white ramp, its alpha falling as an eased curve from `from` to 0 along
+		// its length; tinted by the view's colour and stretched, it is a fade
+		// without the bands of stacked rectangles
+		std::unique_ptr<memory_image_info> make_ramp(std::vector<u8>& pixels, u16 length, bool horizontal, f32 from)
+		{
+			pixels.resize(usz{length} * 4);
+			for (u16 i = 0; i < length; i++)
+			{
+				const f32 t = static_cast<f32>(i) / (length - 1);
+				const f32 eased = (1.f - t) * (1.f - t) * (3.f - 2.f * (1.f - t)) * 0.5f + (1.f - t) * (1.f - t) * 0.5f;
+				pixels[i * 4 + 0] = 255;
+				pixels[i * 4 + 1] = 255;
+				pixels[i * 4 + 2] = 255;
+				pixels[i * 4 + 3] = static_cast<u8>(std::lround(255.f * from * eased));
+			}
+			auto image = std::make_unique<memory_image_info>(horizontal ? length : u16{1}, horizontal ? u16{1} : length, u8{4}, pixels.data());
 			image->dirty = true;
 			return image;
 		}
@@ -175,77 +307,115 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::build_static()
 	{
-		// Background
-		m_background.set_size(virtual_width, virtual_height);
-		m_background.back_color = c_backdrop;
+		// Background: the art, a light wash, and the fades that seat the text on it
+		m_backdrop.set_size(virtual_width, virtual_height);
+		m_backdrop.back_color = c_backdrop;
+		for (image_view* view : {&m_background, &m_background_prev})
+		{
+			view->set_size(virtual_width, virtual_height);
+			view->back_color.a = 0.f;
+		}
 
 		m_wash.set_size(virtual_width, virtual_height);
-		m_wash.back_color = color4f(0.f, 0.f, 0.f, 0.15f);
+		m_wash.back_color = color4f(0.f, 0.f, 0.f, 0.12f);
 
-		// The fade from the left edge (where the text sits) and up from the bottom
-		// (where the games row sits), as bands of falling opacity
-		constexpr int bands = 32;
-		for (int i = 0; i < bands; i++)
+		m_fade_left_image = make_ramp(m_fade_left_pixels, 256, true, 0.94f);
+		m_fade_left.set_raw_image(m_fade_left_image.get());
+		m_fade_left.set_size(820, virtual_height);
+
+		m_fade_top_image = make_ramp(m_fade_top_pixels, 128, false, 0.6f);
+		m_fade_top.set_raw_image(m_fade_top_image.get());
+		m_fade_top.set_size(virtual_width, 130);
+
+		// The bottom fade rises from the screen's foot: its ramp runs upward
+		m_fade_bottom_image = make_ramp(m_fade_bottom_pixels, 256, false, 0.96f);
+		std::reverse(reinterpret_cast<u32*>(m_fade_bottom_pixels.data()), reinterpret_cast<u32*>(m_fade_bottom_pixels.data()) + 256);
+		m_fade_bottom.set_raw_image(m_fade_bottom_image.get());
+		m_fade_bottom.set_size(virtual_width, 360);
+		m_fade_bottom.set_pos(0, virtual_height - 360);
+
+		for (image_view* fade : {&m_fade_left, &m_fade_top, &m_fade_bottom})
 		{
-			auto band = std::make_unique<overlay_element>();
-			const u16 band_w = 760 / bands;
-			band->set_pos(static_cast<s16>(i * band_w), 0);
-			band->set_size(band_w + 1, virtual_height);
-			const f32 t = static_cast<f32>(i) / bands;
-			band->back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.88f * (1.f - t) * (1.f - t));
-			m_fades.push_back(std::move(band));
-		}
-		for (int i = 0; i < bands; i++)
-		{
-			auto band = std::make_unique<overlay_element>();
-			const u16 band_h = 300 / bands;
-			band->set_pos(0, static_cast<s16>(virtual_height - (i + 1) * band_h));
-			band->set_size(virtual_width, band_h + 1);
-			const f32 t = static_cast<f32>(i) / bands;
-			band->back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.9f * (1.f - t) * (1.f - t));
-			m_fades.push_back(std::move(band));
+			fade->fore_color = c_backdrop;
+			fade->back_color.a = 0.f;
 		}
 
-		// Top bar
-		style_label(m_logo, "RPCS3", 22, c_text);
-		m_logo.set_pos(40, 22);
+		// Top bar: the logo, a divider, the tabs, the user
+		m_logo_data = load_image("/app0/assets/launcher/rpcs3-logo.png");
+		if (m_logo_data)
+		{
+			// Drawn at three times the virtual space
+			m_logo.set_raw_image(m_logo_data.get());
+			m_logo.set_size(static_cast<u16>(m_logo_data->w / 3), static_cast<u16>(m_logo_data->h / 3));
+			m_logo.back_color.a = 0.f;
+			m_logo.set_pos(c_margin, static_cast<s16>(c_bar_y - m_logo.h / 2));
+		}
+		else
+		{
+			style_label(m_logo_text, "RPCS3", 15, f_bold, c_text);
+			place(m_logo_text, c_margin, c_bar_y);
+		}
+		const s16 logo_right = m_logo_data ? static_cast<s16>(m_logo.x + m_logo.w) : static_cast<s16>(m_logo_text.x + m_logo_text.w);
+
+		m_bar_divider.set_pos(static_cast<s16>(logo_right + 22), c_bar_y - 12);
+		m_bar_divider.set_size(1, 24);
+		m_bar_divider.back_color = color4f(1.f, 1.f, 1.f, 0.28f);
 
 		for (const char* name : {"Home", "Library", "Settings"})
 		{
-			m_tab_labels.push_back(make_label(name, 16, c_text_dim));
+			m_tab_labels.push_back(make_label(name, 13, f_medium, c_text_dim));
 		}
-		m_tab_underline.border_radius = 1;
+		m_tab_underline.border_radius = 2;
 		m_tab_underline.back_color = c_accent;
-		layout_tabs();
 
 		const std::string user = read_user_name();
-		style_label(m_user_name, user, 15, c_text);
-		m_user_name.set_pos(static_cast<s16>(1240 - m_user_name.w), 28);
-		m_avatar.set_size(34, 34);
-		m_avatar.set_pos(static_cast<s16>(m_user_name.x - 46), 20);
-		m_avatar.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, 0.85f);
-		style_label(m_avatar_letter, user.substr(0, 1), 16, c_button_text);
-		m_avatar_letter.set_size(34, 34);
-		m_avatar_letter.align_text(text_align::center);
-		m_avatar_letter.set_pos(m_avatar.x, static_cast<s16>(m_avatar.y + 6));
+		style_label(m_user_name, user, 12, f_semibold, c_text);
+		place(m_user_name, static_cast<s16>(c_right - m_user_name.w), c_bar_y);
+
+		m_avatar.set_size(30, 30);
+		m_avatar.set_pos(static_cast<s16>(m_user_name.x - 12 - 30), c_bar_y - 15);
+		m_avatar.back_color = c_accent;
+
+		// The initial, centred on the circle by its drawn shape, not its advance
+		const std::u32string initial = utf8_to_u32string(user).substr(0, 1);
+		std::u32string upper = initial;
+		if (!upper.empty() && upper[0] < 0x80)
+		{
+			upper[0] = static_cast<char32_t>(std::toupper(static_cast<int>(upper[0])));
+		}
+		m_avatar_letter.set_font(13, f_bold);
+		m_avatar_letter.set_unicode_text(upper);
+		m_avatar_letter.fore_color = c_button_text;
+		m_avatar_letter.back_color.a = 0.f;
+		m_avatar_letter.set_padding(0);
+		m_avatar_letter.auto_resize();
+		{
+			font* renderer = m_avatar_letter.get_font();
+			const ink shape = measure_ink(renderer, upper);
+			const f32 cx = m_avatar.x + m_avatar.w / 2.f;
+			const f32 cy = m_avatar.y + m_avatar.h / 2.f;
+			m_avatar_letter.set_pos(static_cast<s16>(std::lround(cx - (shape.left + shape.right) / 2.f)),
+				static_cast<s16>(std::lround(cy - renderer->get_size_px() - (shape.top + shape.bottom) / 2.f)));
+		}
 
 		// Hero
-		style_label(m_platform, spaced("PLAYSTATION 3"), 13, c_text_dim);
-		m_platform.set_pos(64, 140);
+		style_label(m_welcome, spaced("WELCOME BACK"), 10, f_semibold, c_text_dim);
+		place(m_welcome, c_hero_x, 146);
 
-		m_title.set_font(46);
+		m_title.set_font(40, f_bold);
 		m_title.fore_color = c_text;
 		m_title.back_color.a = 0.f;
+		m_title.set_padding(0);
 		m_title.set_wrap_text(true);
-		m_title.set_pos(60, 168);
-		m_title.set_size(600, 170);
+		m_title.set_pos(c_hero_x - 2, 166);
+		m_title.set_size(600, 120);
 
-		m_play_button.set_size(186, 48);
-		m_play_button.border_radius = 24;
+		m_play_button.set_size(176, 44);
+		m_play_button.border_radius = 22;
 		m_play_button.back_color = c_button;
 
 		m_play_icon_data = resource_config::load_icon("home/32/play-button-arrowhead.png");
-		m_play_icon.set_size(20, 20);
+		m_play_icon.set_size(16, 16);
 		m_play_icon.back_color.a = 0.f;
 		if (m_play_icon_data)
 		{
@@ -253,117 +423,161 @@ namespace rsx::overlays
 			m_play_icon.set_raw_image(m_play_icon_data.get());
 			m_play_icon.fore_color = c_button_text;
 		}
-		style_label(m_play_label, "Play now", 18, c_button_text);
+		style_label(m_play_label, "Play now", 14, f_semibold, c_button_text);
 
-		m_settings_button.set_size(48, 48);
-		m_settings_button.back_color = color4f(1.f, 1.f, 1.f, 0.08f);
-		m_settings_button.border_size = 1;
-		m_settings_button.border_color = color4f(1.f, 1.f, 1.f, 0.35f);
-		m_settings_icon_data = resource_config::load_icon("home/32/settings.png");
-		m_settings_icon.set_size(24, 24);
-		m_settings_icon.back_color.a = 0.f;
-		if (m_settings_icon_data)
+		const auto round_button = [](ellipse& button, image_view& icon, std::unique_ptr<image_info>& data, const std::string& path, label& text, std::string_view caption)
 		{
-			m_settings_icon_data->dirty = true;
-			m_settings_icon.set_raw_image(m_settings_icon_data.get());
-		}
-		style_label(m_settings_label, "Game settings", 16, c_text);
-
-		m_delete_button.border_radius = 24;
-		m_delete_button.back_color = color4f(1.f, 1.f, 1.f, 0.08f);
-		m_delete_button.border_size = 1;
-		m_delete_button.border_color = color4f(1.f, 1.f, 1.f, 0.35f);
-		style_label(m_delete_label, "Delete", 16, c_text);
-		m_delete_button.set_size(static_cast<u16>(m_delete_label.w + 48), 48);
+			button.set_size(44, 44);
+			button.back_color = c_glass;
+			button.border_size = 1;
+			button.border_color = c_glass_border;
+			data = path.starts_with("/") ? load_image(path) : resource_config::load_icon(path);
+			icon.set_size(20, 20);
+			icon.back_color.a = 0.f;
+			if (data)
+			{
+				data->dirty = true;
+				icon.set_raw_image(data.get());
+			}
+			style_label(text, caption, 12, f_medium, c_text);
+		};
+		round_button(m_settings_button, m_settings_icon, m_settings_icon_data, "home/32/settings.png", m_settings_label, "Game settings");
+		round_button(m_delete_button, m_delete_icon, m_delete_icon_data, "/app0/assets/launcher/trash.png", m_delete_label, "Delete");
 
 		// The delete confirmation, centred over a dimmed screen
 		m_confirm_dim.set_size(virtual_width, virtual_height);
-		m_confirm_dim.back_color = color4f(0.f, 0.f, 0.f, 0.6f);
-		m_confirm_panel.set_size(640, 230);
-		m_confirm_panel.set_pos((virtual_width - 640) / 2, (virtual_height - 230) / 2);
-		m_confirm_panel.border_radius = 18;
-		m_confirm_panel.back_color = color4f(0.07f, 0.08f, 0.14f, 0.97f);
+		m_confirm_dim.back_color = color4f(0.f, 0.f, 0.f, 0.62f);
+		m_confirm_panel.set_size(600, 220);
+		m_confirm_panel.set_pos((virtual_width - 600) / 2, (virtual_height - 220) / 2);
+		m_confirm_panel.border_radius = 20;
+		m_confirm_panel.back_color = color4f(0.06f, 0.07f, 0.12f, 0.98f);
 		m_confirm_panel.border_size = 1;
-		m_confirm_panel.border_color = color4f(1.f, 1.f, 1.f, 0.2f);
-		m_confirm_title.set_font(22);
-		m_confirm_title.fore_color = c_text;
-		m_confirm_title.back_color.a = 0.f;
+		m_confirm_panel.border_color = color4f(1.f, 1.f, 1.f, 0.16f);
+		style_label(m_confirm_title, "", 17, f_semibold, c_text);
 		m_confirm_title.set_wrap_text(true);
-		m_confirm_title.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 28));
-		m_confirm_title.set_size(576, 60);
-		m_confirm_body.set_font(15);
-		m_confirm_body.fore_color = c_text_dim;
-		m_confirm_body.back_color.a = 0.f;
+		style_label(m_confirm_body, "", 12, f_regular, c_text_dim);
 		m_confirm_body.set_wrap_text(true);
-		m_confirm_body.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 92));
-		m_confirm_body.set_size(576, 80);
-		m_confirm_yes.set_image_resource(resource_config::confirm_button_resource());
-		m_confirm_yes.set_font(15);
-		m_confirm_yes.back_color.a = 0.f;
-		m_confirm_yes.set_pos(static_cast<s16>(m_confirm_panel.x + 32), static_cast<s16>(m_confirm_panel.y + 182));
-		m_confirm_no.set_image_resource(resource_config::cancel_button_resource());
-		m_confirm_no.set_text("Cancel");
-		m_confirm_no.set_font(15);
-		m_confirm_no.back_color.a = 0.f;
-		m_confirm_no.set_pos(static_cast<s16>(m_confirm_panel.x + 200), static_cast<s16>(m_confirm_panel.y + 182));
+
+		const auto make_hint = [](hint& target, u8 image, std::string_view text)
+		{
+			target.icon.set_image_resource(image);
+			target.icon.set_size(18, 18);
+			target.icon.back_color.a = 0.f;
+			style_label(target.text, text, 11, f_medium, c_text);
+		};
+		make_hint(m_confirm_yes, resource_config::confirm_button_resource(), "Delete");
+		make_hint(m_confirm_no, resource_config::cancel_button_resource(), "Cancel");
 
 		// The games row
-		style_label(m_row_title, "Your games", 15, c_text);
-		m_row_title.set_pos(c_row_x, c_row_y - 36);
-		m_row_rule.set_pos(static_cast<s16>(c_row_x + m_row_title.w + 16), static_cast<s16>(c_row_y - 26));
-		m_row_rule.set_size(static_cast<u16>(1240 - m_row_rule.x), 1);
-		m_row_rule.back_color = color4f(1.f, 1.f, 1.f, 0.22f);
+		style_label(m_row_title, "Your games", 12, f_semibold, c_text);
+		place(m_row_title, c_margin, c_row_y - 24);
+		m_row_rule.set_pos(static_cast<s16>(c_margin + m_row_title.w + 18), c_row_y - 24);
+		m_row_rule.set_size(static_cast<u16>(c_right - m_row_rule.x), 1);
+		m_row_rule.back_color = color4f(1.f, 1.f, 1.f, 0.2f);
 
-		m_highlight.border_radius = 8;
+		m_highlight.border_radius = c_tile_radius + 4;
 		m_highlight.border_size = 3;
 		m_highlight.border_color = c_accent;
 		m_highlight.back_color.a = 0.f;
-		m_highlight.set_size(c_tile_w + 8, c_tile_h + 8);
+		m_highlight.set_size(c_tile_w + 10, c_tile_h + 10);
 
-		style_label(m_placeholder, "Looking for games...", 18, c_text_dim);
-		m_placeholder.set_pos(c_row_x, c_row_y + 40);
+		style_label(m_placeholder, "Looking for games...", 13, f_regular, c_text_dim);
+		place(m_placeholder, c_margin, c_row_y + 40);
 
-		// Button prompts, bottom right
-		const auto hint = [](image_button& button, u8 image, std::string_view text)
-		{
-			button.set_image_resource(image);
-			button.set_text(text);
-			button.set_font(15);
-			button.back_color.a = 0.f;
-		};
-		hint(m_hint_play, resource_config::confirm_button_resource(), "Select");
-		hint(m_hint_settings, resource_config::standard_image_resource::triangle, "Settings");
-		hint(m_hint_delete, resource_config::standard_image_resource::square, "Delete");
-		hint(m_hint_l1, resource_config::standard_image_resource::L1, "");
-		hint(m_hint_r1, resource_config::standard_image_resource::R1, "Tabs");
-		m_hint_r1.set_pos(1150, 676);
-		m_hint_l1.set_pos(1116, 676);
-		m_hint_delete.set_pos(1000, 676);
-		m_hint_settings.set_pos(870, 676);
-		m_hint_play.set_pos(750, 676);
-
+		layout_tabs();
 		layout_home();
 	}
 
 	void ps5_launcher_dialog::layout_tabs()
 	{
-		s16 x = static_cast<s16>(m_logo.x + m_logo.w + 60);
+		s16 x = static_cast<s16>(m_bar_divider.x + 30);
 		for (usz i = 0; i < m_tab_labels.size(); i++)
 		{
 			label& tab_label = *m_tab_labels[i];
 			const bool active = i == static_cast<usz>(m_tab);
+			tab_label.set_font(13, active ? f_semibold : f_medium);
 			tab_label.fore_color = active ? c_text : c_text_dim;
-			tab_label.set_pos(x, 28);
+			tab_label.auto_resize();
+			place(tab_label, x, c_bar_y);
 			tab_label.refresh();
 
 			if (active)
 			{
-				m_tab_underline.set_pos(static_cast<s16>(x - 2), static_cast<s16>(tab_label.y + tab_label.h + 6));
-				m_tab_underline.set_size(static_cast<u16>(tab_label.w + 4), 3);
+				m_tab_underline.set_pos(static_cast<s16>(x - 10), c_bar_y + 16);
+				m_tab_underline.set_size(static_cast<u16>(tab_label.w + 20), 3);
 				m_tab_underline.refresh();
 			}
 
-			x = static_cast<s16>(x + tab_label.w + 40);
+			x = static_cast<s16>(x + tab_label.w + 34);
+		}
+
+		layout_hints();
+	}
+
+	void ps5_launcher_dialog::layout_hints()
+	{
+		// Right-aligned on one line: what the buttons do here
+		std::vector<std::pair<u8, std::string_view>> hints;
+		if (m_tab == tab::home && !m_games.empty())
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), m_focus == focus::tiles ? "Play" : "Select");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::triangle), "Settings");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Delete");
+		}
+		else if (m_tab != tab::home)
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), "Select");
+			hints.emplace_back(resource_config::cancel_button_resource(), "Back");
+		}
+		hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::L1), "");
+		hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::R1), "Tabs");
+
+		m_hints.clear();
+		for (const auto& [image, text] : hints)
+		{
+			auto entry = std::make_unique<hint>();
+			entry->icon.set_image_resource(image);
+			entry->icon.set_size(20, 20);
+			entry->icon.back_color.a = 0.f;
+			style_label(entry->text, text, 11, f_medium, c_text_dim);
+			m_hints.push_back(std::move(entry));
+		}
+
+		// A glyph with no words (L1) sits close to the next one (R1, "Tabs")
+		s16 x = c_right;
+		for (usz i = m_hints.size(); i-- > 0;)
+		{
+			hint& entry = *m_hints[i];
+			if (!entry.text.text.empty())
+			{
+				x = static_cast<s16>(x - entry.text.w);
+				place(entry.text, x, c_hints_y);
+				x = static_cast<s16>(x - 7);
+			}
+			x = static_cast<s16>(x - 20);
+			entry.icon.set_pos(x, c_hints_y - 10);
+			x = static_cast<s16>(x - ((i > 0 && m_hints[i - 1]->text.text.empty()) ? 4 : 24));
+		}
+	}
+
+	void ps5_launcher_dialog::layout_confirm()
+	{
+		const s16 left = static_cast<s16>(m_confirm_panel.x + 36);
+		m_confirm_title.set_pos(left, static_cast<s16>(m_confirm_panel.y + 32));
+		m_confirm_title.set_size(528, 60);
+		m_confirm_title.auto_resize(false, 528, 60);
+		m_confirm_body.set_pos(left, static_cast<s16>(m_confirm_title.y + m_confirm_title.h + 14));
+		m_confirm_body.set_size(528, 80);
+		m_confirm_body.auto_resize(false, 528, 80);
+
+		const f32 hints_y = m_confirm_panel.y + m_confirm_panel.h - 36.f;
+		s16 x = left;
+		for (hint* entry : {&m_confirm_yes, &m_confirm_no})
+		{
+			entry->icon.set_pos(x, static_cast<s16>(hints_y - 9));
+			entry->text.auto_resize();
+			place(entry->text, static_cast<s16>(x + 26), hints_y);
+			x = static_cast<s16>(x + 26 + entry->text.w + 28);
 		}
 	}
 
@@ -372,10 +586,25 @@ namespace rsx::overlays
 		// The title's lines decide where the chips and the buttons go
 		const ps5_launcher_game* game = (m_selected >= 0 && static_cast<usz>(m_selected) < m_games.size()) ? &m_games[m_selected] : nullptr;
 
+		// Anchored at the buttons' line, as the design: the title grows upward
+		// from the chips, and the greeting sits over its first line
+		constexpr s16 buttons_y = 404;
+		constexpr s16 chips_y = 350;
+
 		m_title.set_text(game ? (game->info.name.empty() ? game->info.serial : game->info.name) : std::string(m_loading ? "" : "No games yet"));
-		m_title.set_size(600, 170);
-		m_title.auto_resize(false, 600, 170);
-		s16 y = static_cast<s16>(m_title.y + m_title.h + 18);
+		m_title.set_size(600, 120);
+		m_title.auto_resize(false, 600, 120);
+		{
+			font* renderer = m_title.get_font();
+			const ink cap = measure_ink(renderer, U"H");
+			// The last line's baseline sits 20 above the chips
+			const f32 last_baseline = (game ? chips_y : buttons_y) - 20.f;
+			const f32 extra_lines = std::max(0.f, static_cast<f32>(m_title.h) - renderer->get_size_px());
+			m_title.set_pos(c_hero_x - 2, static_cast<s16>(std::lround(last_baseline - extra_lines - renderer->get_size_px())));
+			place(m_welcome, c_hero_x, m_title.y + renderer->get_size_px() + cap.top - 24.f);
+			m_welcome.refresh();
+		}
+		s16 y = chips_y;
 
 		// Chips: what the game's PARAM.SFO says of it
 		m_chips.clear();
@@ -383,64 +612,74 @@ namespace rsx::overlays
 		if (game)
 		{
 			std::vector<std::string> chips;
-			if (!game->info.serial.empty()) chips.push_back(game->info.serial);
 			if (game->info.category == "DG") chips.push_back("Disc");
 			else if (game->info.category == "HG") chips.push_back("Digital");
+			if (!game->info.serial.empty()) chips.push_back(game->info.serial);
 			if (!game->info.app_ver.empty() && game->info.app_ver != "Unknown") chips.push_back("Version " + game->info.app_ver);
 
-			s16 x = 64;
+			s16 x = c_hero_x;
 			for (const std::string& text : chips)
 			{
-				auto chip_label = make_label(text, 13, c_text);
+				auto chip_label = make_label(text, 10, f_medium, c_text);
 				auto chip = std::make_unique<rounded_rect>();
-				chip->border_radius = 14;
-				chip->back_color = c_chip;
+				chip->border_radius = 12;
+				chip->back_color = c_glass;
+				chip->border_size = 1;
+				chip->border_color = color4f(1.f, 1.f, 1.f, 0.14f);
 				chip->set_pos(x, y);
-				chip->set_size(static_cast<u16>(chip_label->w + 28), 28);
-				chip_label->set_pos(static_cast<s16>(x + 14), static_cast<s16>(y + (28 - chip_label->h) / 2));
-				x = static_cast<s16>(x + chip->w + 10);
+				chip->set_size(static_cast<u16>(chip_label->w + 30), 24);
+				place(*chip_label, static_cast<s16>(x + 15), y + 12.f);
+				x = static_cast<s16>(x + chip->w + 8);
 				m_chips.push_back(std::move(chip));
 				m_chip_labels.push_back(std::move(chip_label));
 			}
-			y = static_cast<s16>(y + 28 + 30);
 		}
-		else
-		{
-			y = static_cast<s16>(y + 10);
-		}
+		y = buttons_y;
 
-		m_play_button.set_pos(64, y);
-		m_play_icon.set_pos(static_cast<s16>(m_play_button.x + 32), static_cast<s16>(y + 14));
-		m_play_label.set_pos(static_cast<s16>(m_play_button.x + 66), static_cast<s16>(y + (48 - m_play_label.h) / 2));
-		m_settings_button.set_pos(static_cast<s16>(m_play_button.x + m_play_button.w + 24), y);
+		const f32 mid = y + 22.f;
+		m_play_button.set_pos(c_hero_x, y);
+		m_play_icon.set_pos(static_cast<s16>(c_hero_x + 30), static_cast<s16>(mid - 8));
+		place(m_play_label, static_cast<s16>(c_hero_x + 58), mid);
+
+		m_settings_button.set_pos(static_cast<s16>(c_hero_x + m_play_button.w + 22), y);
 		m_settings_icon.set_pos(static_cast<s16>(m_settings_button.x + 12), static_cast<s16>(y + 12));
-		m_settings_label.set_pos(static_cast<s16>(m_settings_button.x + 62), static_cast<s16>(y + (48 - m_settings_label.h) / 2));
-		m_delete_button.set_pos(static_cast<s16>(m_settings_label.x + m_settings_label.w + 36), y);
-		m_delete_label.set_pos(static_cast<s16>(m_delete_button.x + 24), static_cast<s16>(y + (48 - m_delete_label.h) / 2));
-		m_delete_button.refresh();
-		m_delete_label.refresh();
+		place(m_settings_label, static_cast<s16>(m_settings_button.x + 44 + 14), mid);
 
-		for (overlay_element* element : std::initializer_list<overlay_element*>{&m_title, &m_play_button, &m_play_icon, &m_play_label, &m_settings_button, &m_settings_icon, &m_settings_label})
+		m_delete_button.set_pos(static_cast<s16>(m_settings_label.x + m_settings_label.w + 30), y);
+		m_delete_icon.set_pos(static_cast<s16>(m_delete_button.x + 12), static_cast<s16>(y + 12));
+		place(m_delete_label, static_cast<s16>(m_delete_button.x + 44 + 14), mid);
+
+		for (overlay_element* element : std::initializer_list<overlay_element*>{&m_title, &m_play_button, &m_play_icon, &m_play_label, &m_settings_button,
+				&m_settings_icon, &m_settings_label, &m_delete_button, &m_delete_icon, &m_delete_label})
 		{
 			element->refresh();
 		}
 
-		// The background: the game's art, or its icon blurred, or none
-		if (game && game->background)
+		// The background: the game's art, or its icon blurred, or none; the last
+		// one stays beneath while the new one fades in
+		const image_info_base* next = game ? (game->background ? game->background.get() : game->icon.get()) : nullptr;
+		if (next != m_background_image)
 		{
-			m_background.set_blur_strength(0);
-			m_background.set_raw_image(game->background.get());
+			m_background_fading = m_background_image && next;
+			if (m_background_fading)
+			{
+				m_background_prev.set_raw_image(m_background_image);
+				m_background_prev.set_blur_strength(m_background_blur);
+				m_background_prev.fore_color = color4f(1.f);
+				m_background_prev.refresh();
+				m_background_fade_start = 0; // set by the next update
+			}
+
+			m_background_image = next;
+			m_background_blur = (game && !game->background) ? 80 : 0;
+			if (next)
+			{
+				m_background.set_blur_strength(m_background_blur);
+				m_background.set_raw_image(next);
+				m_background.fore_color = color4f(1.f, 1.f, 1.f, m_background_fading ? 0.f : 1.f);
+				m_background.refresh();
+			}
 		}
-		else if (game && game->icon)
-		{
-			m_background.set_blur_strength(80);
-			m_background.set_raw_image(game->icon.get());
-		}
-		else
-		{
-			m_background.clear_image();
-		}
-		m_background.refresh();
 
 		// The visible tiles, with the selected one kept in view
 		if (m_selected < m_first_visible)
@@ -457,10 +696,11 @@ namespace rsx::overlays
 		for (s32 i = 0; i < c_visible_tiles && static_cast<usz>(m_first_visible + i) < m_games.size(); i++)
 		{
 			const ps5_launcher_game& entry = m_games[m_first_visible + i];
-			const s16 x = static_cast<s16>(c_row_x + i * (c_tile_w + c_tile_gap));
+			const s16 x = static_cast<s16>(c_margin + i * (c_tile_w + c_tile_gap));
 			const bool selected = m_first_visible + i == m_selected;
 
-			auto tile = std::make_unique<image_view>();
+			auto tile = std::make_unique<rounded_image>();
+			tile->border_radius = c_tile_radius;
 			tile->set_pos(x, c_row_y);
 			tile->set_size(c_tile_w, c_tile_h);
 			tile->back_color = color4f(1.f, 1.f, 1.f, 0.08f);
@@ -473,13 +713,13 @@ namespace rsx::overlays
 				tile->set_image_resource(resource_config::standard_image_resource::new_entry);
 			}
 
-			auto name = make_label(entry.info.name.empty() ? entry.info.serial : entry.info.name, selected ? 16 : 15, selected ? c_text : c_text_dim);
-			name->set_size(c_tile_w, name->h);
-			name->set_pos(x, static_cast<s16>(c_row_y + c_tile_h + 12));
+			auto name = make_label("", 12, selected ? f_semibold : f_medium, selected ? c_text : c_text_dim);
+			fit_text(*name, entry.info.name.empty() ? entry.info.serial : entry.info.name, c_tile_w - 4);
+			place(*name, static_cast<s16>(x + 2), c_row_y + c_tile_h + 22.f);
 
 			if (selected)
 			{
-				m_highlight.set_pos(static_cast<s16>(x - 4), static_cast<s16>(c_row_y - 4));
+				m_highlight.set_pos(static_cast<s16>(x - 5), static_cast<s16>(c_row_y - 5));
 				m_highlight.refresh();
 			}
 
@@ -489,7 +729,8 @@ namespace rsx::overlays
 
 		if (!m_loading)
 		{
-			style_label(m_placeholder, "No games found. Put each game's folder in /data/homebrew/PPSA99200/rpcs3/games/", 16, c_text_dim);
+			style_label(m_placeholder, "No games found. Put each game's folder in /data/homebrew/PPSA99200/rpcs3/games/", 13, f_regular, c_text_dim);
+			place(m_placeholder, c_margin, c_row_y + 40);
 		}
 
 		layout_focus();
@@ -497,21 +738,22 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::layout_focus()
 	{
-		// The focused button gets the accent's outline; the tile outline shows
-		// strongly while the row has the focus, faintly while a button has it
-		const auto outline = [](overlay_element& button, bool focused, u8 idle_border)
+		// The focused button gets the accent's ring; the tile ring is bright
+		// while the row has the focus and faint while a button has it
+		const auto outline = [](overlay_element& button, bool focused, u8 idle_border, const color4f& idle_color)
 		{
 			button.border_size = focused ? 3 : idle_border;
-			button.border_color = focused ? c_accent : color4f(1.f, 1.f, 1.f, 0.35f);
+			button.border_color = focused ? c_accent : idle_color;
 			button.refresh();
 		};
-		outline(m_play_button, m_focus == focus::play, 0);
-		outline(m_settings_button, m_focus == focus::settings, 1);
-		outline(m_delete_button, m_focus == focus::remove, 1);
+		outline(m_play_button, m_focus == focus::play, 0, c_glass_border);
+		outline(m_settings_button, m_focus == focus::settings, 1, c_glass_border);
+		outline(m_delete_button, m_focus == focus::remove, 1, c_glass_border);
 
-		m_highlight.border_color = m_focus == focus::tiles ? c_accent : color4f(c_accent.r, c_accent.g, c_accent.b, 0.35f);
-		m_highlight.pulse_effect_enabled = m_focus == focus::tiles;
+		m_highlight.border_color = m_focus == focus::tiles ? c_accent : color4f(c_accent.r, c_accent.g, c_accent.b, 0.3f);
 		m_highlight.refresh();
+
+		layout_hints();
 	}
 
 	void ps5_launcher_dialog::set_focus(focus next)
@@ -536,8 +778,10 @@ namespace rsx::overlays
 		const big_picture_game_info& info = m_games[m_selected].info;
 		m_confirm_title.set_text("Delete " + (info.name.empty() ? info.serial : info.name) + "?");
 		m_confirm_body.set_text("This removes the game's files, its compiled code and its place in the library from the console. Saves are kept. It can't be undone.");
-		m_confirm_yes.set_text("Delete");
-		m_confirm_no.set_visible(true);
+		m_confirm_yes.text.set_text("Delete");
+		m_confirm_no.icon.set_visible(true);
+		m_confirm_no.text.set_visible(true);
+		layout_confirm();
 		m_confirm_delete = true;
 		m_delete_result.clear();
 		play_sound(sound_effect::dialog_ok);
@@ -576,6 +820,7 @@ namespace rsx::overlays
 		m_deleting = true;
 		m_confirm_title.set_text("Deleting " + (info.name.empty() ? info.serial : info.name) + "...");
 		m_confirm_body.set_text("This can take a while for a large game.");
+		layout_confirm();
 
 		m_delete_thread = std::make_unique<named_thread<std::function<void()>>>("Launcher Delete", [this, info, root]()
 		{
@@ -614,8 +859,10 @@ namespace rsx::overlays
 				{
 					m_confirm_title.set_text("Couldn't delete everything");
 					m_confirm_body.set_text(result);
-					m_confirm_yes.set_text("OK");
-					m_confirm_no.set_visible(false);
+					m_confirm_yes.text.set_text("OK");
+					m_confirm_no.icon.set_visible(false);
+					m_confirm_no.text.set_visible(false);
+					layout_confirm();
 				}
 			}
 
@@ -686,6 +933,9 @@ namespace rsx::overlays
 			{
 				return;
 			}
+			// The art shown belongs to the list being replaced
+			m_background_image = nullptr;
+			m_background_fading = false;
 			m_games = std::move(games);
 			m_selected = 0;
 			m_first_visible = 0;
@@ -756,6 +1006,22 @@ namespace rsx::overlays
 		if (m_fade_animation.active)
 		{
 			m_fade_animation.update(timestamp_us);
+		}
+
+		// The new game's art fading in over the last one's
+		{
+			std::lock_guard lock(m_mutex);
+			if (m_background_fading)
+			{
+				if (!m_background_fade_start)
+				{
+					m_background_fade_start = timestamp_us;
+				}
+				const f32 t = std::min(1.f, static_cast<f32>(timestamp_us - m_background_fade_start) / c_background_fade_us);
+				m_background.fore_color.a = t * t * (3.f - 2.f * t);
+				m_background.refresh();
+				m_background_fading = t < 1.f;
+			}
 		}
 
 		if (m_tab == tab::library)
@@ -875,16 +1141,23 @@ namespace rsx::overlays
 		std::lock_guard lock(m_mutex);
 
 		compiled_resource result;
-		result.add(m_background.get_compiled());
-		result.add(m_wash.get_compiled());
-		for (const auto& fade : m_fades)
+		result.add(m_backdrop.get_compiled());
+		if (m_background_fading)
 		{
-			result.add(fade->get_compiled());
+			result.add(m_background_prev.get_compiled());
 		}
+		if (m_background_image)
+		{
+			result.add(m_background.get_compiled());
+		}
+		result.add(m_wash.get_compiled());
+		result.add(m_fade_left.get_compiled());
+		result.add(m_fade_top.get_compiled());
+		result.add(m_fade_bottom.get_compiled());
 
 		if (m_tab == tab::home)
 		{
-			result.add(m_platform.get_compiled());
+			result.add(m_welcome.get_compiled());
 			result.add(m_title.get_compiled());
 			for (usz i = 0; i < m_chips.size(); i++)
 			{
@@ -901,6 +1174,7 @@ namespace rsx::overlays
 				result.add(m_settings_icon.get_compiled());
 				result.add(m_settings_label.get_compiled());
 				result.add(m_delete_button.get_compiled());
+				result.add(m_delete_icon.get_compiled());
 				result.add(m_delete_label.get_compiled());
 			}
 
@@ -913,16 +1187,12 @@ namespace rsx::overlays
 			}
 			else
 			{
+				result.add(m_highlight.get_compiled());
 				for (usz i = 0; i < m_tiles.size(); i++)
 				{
 					result.add(m_tiles[i]->get_compiled());
 					result.add(m_tile_labels[i]->get_compiled());
 				}
-				result.add(m_highlight.get_compiled());
-
-				result.add(m_hint_play.get_compiled());
-				result.add(m_hint_settings.get_compiled());
-				result.add(m_hint_delete.get_compiled());
 			}
 		}
 		else
@@ -935,8 +1205,9 @@ namespace rsx::overlays
 			result.add((m_tab == tab::library ? m_library : m_settings)->get_compiled());
 		}
 
-		// The top bar over everything
-		result.add(m_logo.get_compiled());
+		// The top bar and the hints over everything
+		result.add(m_logo_data ? m_logo.get_compiled() : m_logo_text.get_compiled());
+		result.add(m_bar_divider.get_compiled());
 		for (const auto& tab_label : m_tab_labels)
 		{
 			result.add(tab_label->get_compiled());
@@ -945,8 +1216,11 @@ namespace rsx::overlays
 		result.add(m_avatar.get_compiled());
 		result.add(m_avatar_letter.get_compiled());
 		result.add(m_user_name.get_compiled());
-		result.add(m_hint_l1.get_compiled());
-		result.add(m_hint_r1.get_compiled());
+		for (const auto& entry : m_hints)
+		{
+			result.add(entry->icon.get_compiled());
+			result.add(entry->text.get_compiled());
+		}
 
 		if (m_confirm_delete || m_deleting || !m_delete_result.empty())
 		{
@@ -956,10 +1230,10 @@ namespace rsx::overlays
 			result.add(m_confirm_body.get_compiled());
 			if (!m_deleting)
 			{
-				result.add(m_confirm_yes.get_compiled());
-				if (m_confirm_delete)
+				for (hint* entry : {&m_confirm_yes, &m_confirm_no})
 				{
-					result.add(m_confirm_no.get_compiled());
+					result.add(entry->icon.get_compiled());
+					result.add(entry->text.get_compiled());
 				}
 			}
 		}

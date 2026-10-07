@@ -91,13 +91,31 @@ namespace rsx::overlays
 		std::shared_ptr<home_menu_page> m_library;
 		std::shared_ptr<home_menu_page> m_settings;
 
-		// Background: the selected game's art, a dark wash, and fades to the left and bottom
+		// Background: the selected game's art over the last one's while it fades
+		// in, a dark wash, and smooth fades from the left, the top and the bottom
+		overlay_element m_backdrop;
 		image_view m_background;
+		image_view m_background_prev;
+		const image_info_base* m_background_image = nullptr;
+		u8 m_background_blur = 0;
+		u64 m_background_fade_start = 0;
+		bool m_background_fading = false;
 		overlay_element m_wash;
-		std::vector<std::unique_ptr<overlay_element>> m_fades;
+		image_view m_fade_left;
+		image_view m_fade_top;
+		image_view m_fade_bottom;
+		std::vector<u8> m_fade_left_pixels;
+		std::vector<u8> m_fade_top_pixels;
+		std::vector<u8> m_fade_bottom_pixels;
+		std::unique_ptr<memory_image_info> m_fade_left_image;
+		std::unique_ptr<memory_image_info> m_fade_top_image;
+		std::unique_ptr<memory_image_info> m_fade_bottom_image;
 
 		// Top bar
-		label m_logo;
+		image_view m_logo;
+		std::unique_ptr<image_info> m_logo_data;
+		label m_logo_text; // without the logo's image
+		overlay_element m_bar_divider;
 		std::vector<std::unique_ptr<label>> m_tab_labels;
 		rounded_rect m_tab_underline;
 		ellipse m_avatar;
@@ -105,7 +123,7 @@ namespace rsx::overlays
 		label m_user_name;
 
 		// Hero
-		label m_platform;
+		label m_welcome;
 		label m_title;
 		std::vector<std::unique_ptr<rounded_rect>> m_chips;
 		std::vector<std::unique_ptr<label>> m_chip_labels;
@@ -115,10 +133,12 @@ namespace rsx::overlays
 		ellipse m_settings_button;
 		image_view m_settings_icon;
 		label m_settings_label;
-		rounded_rect m_delete_button;
+		ellipse m_delete_button;
+		image_view m_delete_icon;
 		label m_delete_label;
 		std::unique_ptr<image_info> m_play_icon_data;
 		std::unique_ptr<image_info> m_settings_icon_data;
+		std::unique_ptr<image_info> m_delete_icon_data;
 
 		// The games row
 		label m_row_title;
@@ -128,20 +148,25 @@ namespace rsx::overlays
 		rounded_rect m_highlight;
 		label m_placeholder;
 
+		// A button's glyph and what it does
+		struct hint
+		{
+			image_view icon;
+			label text;
+		};
+
 		// The delete confirmation
 		overlay_element m_confirm_dim;
 		rounded_rect m_confirm_panel;
 		label m_confirm_title;
 		label m_confirm_body;
-		image_button m_confirm_yes{140, 28};
-		image_button m_confirm_no{140, 28};
+		hint m_confirm_yes;
+		hint m_confirm_no;
 
-		// Button prompts
-		image_button m_hint_play{120, 26};
-		image_button m_hint_settings{120, 26};
-		image_button m_hint_delete{100, 26};
-		image_button m_hint_l1{30, 26};
-		image_button m_hint_r1{120, 26};
+		// Button prompts, bottom right
+		std::vector<std::unique_ptr<hint>> m_hints;
+		void layout_hints();
+		void layout_confirm();
 
 		animation_color_interpolate m_fade_animation{};
 	};

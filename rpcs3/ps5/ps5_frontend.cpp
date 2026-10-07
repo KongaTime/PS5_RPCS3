@@ -593,7 +593,9 @@ namespace
 		g_emu_callbacks.play_sound = [](const std::string&, std::optional<f32>) {};
 		g_emu_callbacks.get_image_info = [](const std::string&, std::string&, s32&, s32&, s32&) { return false; };
 		g_emu_callbacks.get_scaled_image = [](const std::string&, s32, s32, s32&, s32&, u8*, bool) { return false; };
-		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{}; };
+		// The title's fonts (the launcher's Inter); the overlays' default is still
+		// the PS3's own, from dev_flash
+		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{"/app0/assets/fonts/"}; };
 		// A disc's packages (PKGDIR, INSDIR, PS3_EXTRA), installed to dev_hdd0 at
 		// its first boot, as the desktop's headless frontend does
 		g_emu_callbacks.on_install_pkgs = [](const std::vector<std::string>& pkgs, bool from_optical_drive)
