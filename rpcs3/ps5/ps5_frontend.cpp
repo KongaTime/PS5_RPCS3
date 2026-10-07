@@ -732,6 +732,33 @@ int run(const char* boot_path)
 	}
 	rpcs3::utils::configure_logs(true);
 
+	// A game's folder boots through its EBOOT.BIN, as the desktop's game list
+	// does (GetElfPathFromDir: EBOOT.BIN, USRDIR/ or PS3_GAME/USRDIR/):
+	// BootGame given the folder itself failed, "Failed to open executable"
+	// (the Ratchet & Clank Collection's disc folder, on my console). Where
+	// none is found, the folder's contents go to the trace
+	std::string elf_path;
+	if (boot_path && *boot_path && fs::is_dir(boot_path))
+	{
+		if (Emulator::GetElfPathFromDir(elf_path, boot_path) == game_boot_result::no_errors)
+		{
+			trace("frontend: %s boots through %s", boot_path, elf_path);
+			boot_path = elf_path.c_str();
+		}
+		else
+		{
+			std::string listing;
+			for (const fs::dir_entry& entry : fs::dir(boot_path))
+			{
+				if (entry.name != "." && entry.name != ".." && listing.size() < 600)
+				{
+					fmt::append(listing, " %s%s", entry.name, entry.is_directory ? "/" : "");
+				}
+			}
+			trace("frontend: no EBOOT.BIN, USRDIR/EBOOT.BIN or PS3_GAME/USRDIR/EBOOT.BIN in %s; it holds:%s", boot_path, listing.empty() ? std::string(" nothing") : listing);
+		}
+	}
+
 	int status = 0;
 	if (boot_path && *boot_path)
 	{
