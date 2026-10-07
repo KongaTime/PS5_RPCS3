@@ -3596,6 +3596,21 @@ u64 thread_base::get_cycles()
 	}
 }
 
+u64 thread_base::get_cpu_time_ns() const
+{
+#if defined(_WIN32) || defined(__APPLE__) || defined(ANDROID)
+	return 0;
+#else
+	clockid_t clock;
+	struct timespec time;
+	if (!pthread_getcpuclockid(reinterpret_cast<pthread_t>(m_thread.load()), &clock) && !clock_gettime(clock, &time))
+	{
+		return static_cast<u64>(time.tv_sec) * 1'000'000'000 + time.tv_nsec;
+	}
+	return 0;
+#endif
+}
+
 void thread_base::push(shared_ptr<thread_future> task)
 {
 	const auto next = &task->next;

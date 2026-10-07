@@ -178,6 +178,9 @@ public:
 	// Get CPU cycles since last time this function was called. First call returns 0.
 	u64 get_cycles();
 
+	// PS5 fork: the thread's CPU time so far, in nanoseconds (0 where unknown)
+	u64 get_cpu_time_ns() const;
+
 	// Wait for the thread (it does NOT change thread state, and can be called from multiple threads)
 	bool join(bool dtor = false) const;
 
@@ -250,6 +253,12 @@ public:
 	static u64 get_cycles(named_thread<T>& thread)
 	{
 		return static_cast<thread_base&>(thread).get_cycles();
+	}
+
+	template <typename T>
+	static u64 get_cpu_time_ns(named_thread<T>& thread)
+	{
+		return static_cast<thread_base&>(thread).get_cpu_time_ns();
 	}
 
 	template <typename T>

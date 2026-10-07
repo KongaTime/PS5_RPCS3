@@ -7,6 +7,7 @@
 // runs a queue of the calls RPCS3 makes "from the main thread".
 
 #include "stdafx.h"
+#include <map>
 #include "ps5_frontend.h"
 
 #include <sys/stat.h>
@@ -32,6 +33,7 @@ std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "Emu/IdManager.h"
 #include "Emu/Memory/vm.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUThread.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
@@ -985,6 +987,43 @@ int run(const char* boot_path)
 						continue;
 					}
 					const auto render = rsx::get_current_renderer();
+
+					// The busiest of the PS3's threads over these five seconds, each
+					// as a share of one core: one thread at 100% holds the game
+					// back however low the total is (the console's process total
+					// counts one thread's time)
+					std::string busiest;
+					{
+						static std::map<std::pair<bool, u32>, u64> s_last_ns;
+						std::vector<std::pair<f64, std::string>> loads;
+						const auto measure = [&](bool spu, u32 id, u64 ns, std::string name)
+						{
+							u64& last = s_last_ns[{spu, id}];
+							if (last && ns > last)
+							{
+								loads.emplace_back((ns - last) / 50'000'000.0, std::move(name));
+							}
+							last = ns;
+						};
+						idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
+						{
+							measure(false, id, thread_ctrl::get_cpu_time_ns(ppu), "PPU " + ppu.get_name());
+						});
+						idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
+						{
+							measure(true, id, thread_ctrl::get_cpu_time_ns(spu), "SPU " + spu.get_name());
+						});
+						std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+						for (usz i = 0; i < loads.size() && i < 8 && loads[i].first >= 5.0; i++)
+						{
+							fmt::append(busiest, " [%s %.0f%%]", loads[i].second, loads[i].first);
+						}
+					}
+					if (!busiest.empty())
+					{
+						trace("busiest threads (%% of one core):%s", busiest);
+					}
+
 					std::string ppus;
 					const u32 count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 					{
