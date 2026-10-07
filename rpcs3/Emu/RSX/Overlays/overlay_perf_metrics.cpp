@@ -12,10 +12,6 @@
 
 #include "util/cpu_stats.hpp"
 
-#ifdef __PROSPERO__
-f32 ps5_sampled_load(u32 group); // PS5: rpcs3/ps5/ps5_frontend.cpp
-#endif
-
 namespace rsx
 {
 	namespace overlays
@@ -557,20 +553,15 @@ namespace rsx
 						m_rsx_cycles += rsx_ns;
 
 #ifdef __PROSPERO__
-						// PS5: no CPU time per thread or for the process (a thread's CPU
-						// clock runs with the wall clock, times() counts one thread: the
-						// loads read 18/16, 6/16 and 1/16 for 18 PPU, 6 SPU and 1 RSX
-						// threads). The PPU and SPU loads are their threads sampled
-						// running, of all the hardware threads (ps5_frontend.cpp), and
-						// RSX's its own busy share
+						// PS5: times() counts one thread's time (the total always read
+						// 6.3%, 1/16 of the console's 16), so the loads are each group's
+						// own CPU time over the interval, of all the hardware threads
 						{
-							static_cast<void>(ppu_ns);
-							static_cast<void>(spu_ns);
-							static_cast<void>(rsx_ns);
-							m_ppu_usage = std::clamp(ps5_sampled_load(0), 0.f, 100.f);
-							m_spu_usage = std::clamp(ps5_sampled_load(1), 0.f, 100.f);
-							m_rsx_usage = std::clamp(static_cast<f32>(rsx_thread.get_load()), 0.f, 100.f);
-							m_cpu_usage = std::min(100.f, m_ppu_usage + m_spu_usage + m_rsx_usage / utils::get_thread_count());
+							const f64 all_ns = std::max(1.0, elapsed_update * 1'000'000.0 * utils::get_thread_count());
+							m_ppu_usage = std::clamp(static_cast<f32>(ppu_ns * 100.0 / all_ns), 0.f, 100.f);
+							m_spu_usage = std::clamp(static_cast<f32>(spu_ns * 100.0 / all_ns), 0.f, 100.f);
+							m_rsx_usage = std::clamp(static_cast<f32>(rsx_ns * 100.0 / all_ns), 0.f, 100.f);
+							m_cpu_usage = std::min(100.f, m_ppu_usage + m_spu_usage + m_rsx_usage);
 							m_total_cycles = std::max<u64>(1, m_ppu_cycles + m_spu_cycles + m_rsx_cycles);
 						}
 #else
