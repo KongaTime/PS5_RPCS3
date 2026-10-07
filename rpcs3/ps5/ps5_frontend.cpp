@@ -8,6 +8,10 @@
 
 #include "stdafx.h"
 #include "ps5_frontend.h"
+
+#include <sys/stat.h>
+
+std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "ps5_gs_frame.h"
 #include "ps5_pad_handler.h"
 #include "ps5_firmware.h"
@@ -595,7 +599,7 @@ namespace
 		g_emu_callbacks.get_scaled_image = [](const std::string&, s32, s32, s32&, s32&, u8*, bool) { return false; };
 		// The title's fonts (the launcher's Inter); the overlays' default is still
 		// the PS3's own, from dev_flash
-		fs::ps5_on_many_open = [](const std::string& report) { trace("open files: %s", report); };
+		fs::ps5_on_many_open = [](const std::string& report) { trace("open files: %s; %s", report, ps5_open_files_report()); };
 		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{"/app0/assets/fonts/"}; };
 		// A disc's packages (PKGDIR, INSDIR, PS3_EXTRA), installed to dev_hdd0 at
 		// its first boot, as the desktop's headless frontend does
@@ -1024,7 +1028,7 @@ int run(const char* boot_path)
 					if (const u32 open = regular + folders; open >= 150 && open >= s_reported + 40)
 					{
 						s_reported = open;
-						trace("open files: %s", fs::ps5_open_report());
+						trace("open files: %s; %s", fs::ps5_open_report(), ps5_open_files_report());
 					}
 				}
 			});

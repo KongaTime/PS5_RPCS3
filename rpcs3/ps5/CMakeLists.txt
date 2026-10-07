@@ -10,6 +10,7 @@ add_library(rpcs3_ps5 STATIC
     ps5_terminate.cpp
     ps5_audio_backend.cpp
     ps5_launcher.cpp
+    ps5_fdtrack.cpp
     ../Input/pad_thread.cpp
     ../Input/product_info.cpp
     ../Input/ps_move_config.cpp
