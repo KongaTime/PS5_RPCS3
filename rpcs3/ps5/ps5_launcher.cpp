@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 
 LOG_CHANNEL(launcher_log, "Launcher");
 
@@ -275,12 +276,68 @@ namespace rsx::overlays
 			image->dirty = true;
 			return image;
 		}
+
+		// The opening's curves: how far a step of it is, at `now` seconds, for a
+		// step from `start` lasting `length`
+		f32 progress(f32 now, f32 start, f32 length)
+		{
+			return std::clamp((now - start) / length, 0.f, 1.f);
+		}
+
+		f32 ease_out(f32 t)
+		{
+			return 1.f - (1.f - t) * (1.f - t) * (1.f - t);
+		}
+
+		f32 ease_in_out(f32 t)
+		{
+			return t < 0.5f ? 4.f * t * t * t : 1.f - std::pow(-2.f * t + 2.f, 3.f) / 2.f;
+		}
+
+		// Part of the screen drawn faded and moved, as the opening has it
+		void add_animated(compiled_resource& out, const compiled_resource& part, f32 alpha, f32 dx = 0.f, f32 dy = 0.f)
+		{
+			if (alpha <= 0.f)
+			{
+				return;
+			}
+			if (alpha >= 1.f && dx == 0.f && dy == 0.f)
+			{
+				out.add(part);
+				return;
+			}
+
+			compiled_resource faded = part;
+			for (auto& cmd : faded.draw_commands)
+			{
+				cmd.config.color.a *= alpha;
+				cmd.config.sdf_config.border_color.a *= alpha;
+			}
+			out.add(faded, dx, dy);
+		}
+
+		// Its timeline, in seconds from the launcher's first frame
+		constexpr f32 c_intro_logo_in = 0.1f;      // the logo fades in, centred
+		constexpr f32 c_intro_line = 0.25f;        // the loading line draws under it
+		constexpr f32 c_intro_move = 1.05f;        // the logo glides into the top bar
+		constexpr f32 c_intro_move_length = 0.6f;
+		constexpr f32 c_intro_reveal = 1.1f;       // the splash's backdrop fades away
+		constexpr f32 c_intro_bar = 1.4f;          // the tabs and the user come down
+		constexpr f32 c_intro_content = 1.45f;     // the hero and the row may start
+		constexpr f32 c_intro_end = 2.2f;
+
+		// Each opening's own, from when the list is read (and the splash allows)
+		constexpr f32 c_content_end = 1.3f;
+
+		// Played once per run of the app
+		bool s_intro_played = false;
 	}
 
 	ps5_launcher_dialog::ps5_launcher_dialog()
 	{
 		m_allow_input_on_pause = true;
 		m_fade_animation.duration_sec = 0.2f;
+		m_play_intro = !std::exchange(s_intro_played, true);
 		return_code = selection_code::canceled;
 
 		build_static();
@@ -995,8 +1052,60 @@ namespace rsx::overlays
 		boot_game(info.path, info.serial);
 	}
 
+	f32 ps5_launcher_dialog::intro_seconds() const
+	{
+		if (!m_play_intro)
+		{
+			return 100.f;
+		}
+		return m_intro_start_us ? (m_now_us - m_intro_start_us) / 1'000'000.f : 0.f;
+	}
+
+	f32 ps5_launcher_dialog::content_seconds() const
+	{
+		// From the later of the list being read and the splash making way
+		const f32 since_read = m_content_start_us ? (m_now_us - m_content_start_us) / 1'000'000.f : -1.f;
+		return std::min(since_read, intro_seconds() - c_intro_content);
+	}
+
+	bool ps5_launcher_dialog::intro_running() const
+	{
+		return intro_seconds() < c_intro_end || (m_content_start_us && content_seconds() < c_content_end);
+	}
+
+	void ps5_launcher_dialog::skip_intro()
+	{
+		// Straight to the end: both clocks run back past their last step
+		constexpr u64 far = 30'000'000;
+		if (m_intro_start_us && m_now_us > far)
+		{
+			m_intro_start_us = m_now_us - far;
+		}
+		if (m_content_start_us && m_now_us > far)
+		{
+			m_content_start_us = m_now_us - far;
+		}
+	}
+
 	void ps5_launcher_dialog::update(u64 timestamp_us)
 	{
+		{
+			std::lock_guard lock(m_mutex);
+			m_now_us = timestamp_us;
+			if (!m_intro_start_us)
+			{
+				m_intro_start_us = timestamp_us;
+			}
+			if (!m_content_start_us && !m_loading)
+			{
+				m_content_start_us = timestamp_us;
+			}
+			if (m_play_intro && intro_seconds() >= c_intro_end + 1.f)
+			{
+				m_play_intro = false;
+			}
+		}
+
 		if (m_reload_requested.exchange(false))
 		{
 			m_enumeration_thread.reset();
@@ -1042,6 +1151,13 @@ namespace rsx::overlays
 		}
 
 		std::lock_guard lock(m_mutex);
+
+		// Any button during the opening ends it
+		if (intro_running())
+		{
+			skip_intro();
+			return;
+		}
 
 		// The delete confirmation, or its result, takes every button
 		if (m_deleting)
@@ -1140,15 +1256,25 @@ namespace rsx::overlays
 
 		std::lock_guard lock(m_mutex);
 
+		const f32 intro = intro_seconds();
+		const f32 content = content_seconds();
+
+		// A step of the hero or the row: rising `rise` pixels into place
+		const auto step = [&](f32 start, f32 length = 0.5f) { return ease_out(progress(content, start, length)); };
+
 		compiled_resource result;
 		result.add(m_backdrop.get_compiled());
-		if (m_background_fading)
 		{
-			result.add(m_background_prev.get_compiled());
-		}
-		if (m_background_image)
-		{
-			result.add(m_background.get_compiled());
+			compiled_resource art;
+			if (m_background_fading)
+			{
+				art.add(m_background_prev.get_compiled());
+			}
+			if (m_background_image)
+			{
+				art.add(m_background.get_compiled());
+			}
+			add_animated(result, art, step(0.f, 0.7f));
 		}
 		result.add(m_wash.get_compiled());
 		result.add(m_fade_left.get_compiled());
@@ -1157,41 +1283,57 @@ namespace rsx::overlays
 
 		if (m_tab == tab::home)
 		{
-			result.add(m_welcome.get_compiled());
-			result.add(m_title.get_compiled());
+			const f32 welcome = step(0.05f);
+			const f32 title = step(0.12f);
+			const f32 chips = step(0.2f);
+			const f32 buttons = step(0.28f);
+			add_animated(result, m_welcome.get_compiled(), welcome, 0.f, 18.f * (1.f - welcome));
+			add_animated(result, m_title.get_compiled(), title, 0.f, 18.f * (1.f - title));
 			for (usz i = 0; i < m_chips.size(); i++)
 			{
-				result.add(m_chips[i]->get_compiled());
-				result.add(m_chip_labels[i]->get_compiled());
+				compiled_resource chip;
+				chip.add(m_chips[i]->get_compiled());
+				chip.add(m_chip_labels[i]->get_compiled());
+				add_animated(result, chip, chips, 0.f, 18.f * (1.f - chips));
 			}
 
 			if (!m_games.empty())
 			{
-				result.add(m_play_button.get_compiled());
-				result.add(m_play_icon.get_compiled());
-				result.add(m_play_label.get_compiled());
-				result.add(m_settings_button.get_compiled());
-				result.add(m_settings_icon.get_compiled());
-				result.add(m_settings_label.get_compiled());
-				result.add(m_delete_button.get_compiled());
-				result.add(m_delete_icon.get_compiled());
-				result.add(m_delete_label.get_compiled());
+				compiled_resource row;
+				for (overlay_element* element : std::initializer_list<overlay_element*>{&m_play_button, &m_play_icon, &m_play_label, &m_settings_button,
+						&m_settings_icon, &m_settings_label, &m_delete_button, &m_delete_icon, &m_delete_label})
+				{
+					row.add(element->get_compiled());
+				}
+				add_animated(result, row, buttons, 0.f, 18.f * (1.f - buttons));
 			}
 
-			result.add(m_row_title.get_compiled());
-			result.add(m_row_rule.get_compiled());
+			{
+				const f32 header = step(0.3f);
+				compiled_resource heading;
+				heading.add(m_row_title.get_compiled());
+				heading.add(m_row_rule.get_compiled());
+				add_animated(result, heading, header);
+			}
 
 			if (m_games.empty())
 			{
-				result.add(m_placeholder.get_compiled());
+				add_animated(result, m_placeholder.get_compiled(), ease_out(progress(intro, c_intro_bar, 0.5f)));
 			}
 			else
 			{
-				result.add(m_highlight.get_compiled());
+				// The tiles one after another, left to right
 				for (usz i = 0; i < m_tiles.size(); i++)
 				{
-					result.add(m_tiles[i]->get_compiled());
-					result.add(m_tile_labels[i]->get_compiled());
+					const f32 tile = step(0.36f + 0.06f * i, 0.55f);
+					compiled_resource part;
+					if (m_first_visible + static_cast<s32>(i) == m_selected)
+					{
+						part.add(m_highlight.get_compiled());
+					}
+					part.add(m_tiles[i]->get_compiled());
+					part.add(m_tile_labels[i]->get_compiled());
+					add_animated(result, part, tile, 0.f, 26.f * (1.f - tile));
 				}
 			}
 		}
@@ -1205,21 +1347,79 @@ namespace rsx::overlays
 			result.add((m_tab == tab::library ? m_library : m_settings)->get_compiled());
 		}
 
-		// The top bar and the hints over everything
-		result.add(m_logo_data ? m_logo.get_compiled() : m_logo_text.get_compiled());
-		result.add(m_bar_divider.get_compiled());
-		for (const auto& tab_label : m_tab_labels)
+		// The top bar comes down after the logo has arrived
 		{
-			result.add(tab_label->get_compiled());
+			const f32 bar = ease_out(progress(intro, c_intro_bar, 0.5f));
+			compiled_resource top;
+			top.add(m_bar_divider.get_compiled());
+			for (const auto& tab_label : m_tab_labels)
+			{
+				top.add(tab_label->get_compiled());
+			}
+			top.add(m_tab_underline.get_compiled());
+			top.add(m_avatar.get_compiled());
+			top.add(m_avatar_letter.get_compiled());
+			top.add(m_user_name.get_compiled());
+			add_animated(result, top, bar, 0.f, -10.f * (1.f - bar));
+
+			compiled_resource hints;
+			for (const auto& entry : m_hints)
+			{
+				hints.add(entry->icon.get_compiled());
+				hints.add(entry->text.get_compiled());
+			}
+			add_animated(result, hints, std::min(bar, step(0.6f)));
 		}
-		result.add(m_tab_underline.get_compiled());
-		result.add(m_avatar.get_compiled());
-		result.add(m_avatar_letter.get_compiled());
-		result.add(m_user_name.get_compiled());
-		for (const auto& entry : m_hints)
+
+		// The splash: its backdrop over everything until it makes way, and the
+		// logo, which ends as the top bar's own
+		if (intro < c_intro_move + c_intro_move_length + 0.1f)
 		{
-			result.add(entry->icon.get_compiled());
-			result.add(entry->text.get_compiled());
+			overlay_element cover;
+			cover.set_size(virtual_width, virtual_height);
+			cover.back_color = c_backdrop;
+			add_animated(result, cover.get_compiled(), 1.f - ease_in_out(progress(intro, c_intro_reveal, 0.6f)));
+
+			const f32 line = ease_out(progress(intro, c_intro_line, 0.75f));
+			const f32 line_alpha = 1.f - progress(intro, c_intro_move - 0.1f, 0.25f);
+			const f32 move = ease_in_out(progress(intro, c_intro_move, c_intro_move_length));
+			const f32 appear = ease_out(progress(intro, c_intro_logo_in, 0.5f));
+
+			if (m_logo_data)
+			{
+				// From 2.5 times its size in the middle (growing a little as it
+				// fades in) to its place in the bar
+				const f32 big = 2.4f + 0.1f * appear;
+				const f32 scale = big + (1.f - big) * move;
+				const f32 w = m_logo.w * scale;
+				const f32 h = m_logo.h * scale;
+				const f32 from_x = (virtual_width - m_logo.w * big) / 2.f;
+				const f32 from_y = (virtual_height - m_logo.h * big) / 2.f - 20.f;
+				image_view logo;
+				logo.set_raw_image(m_logo_data.get());
+				logo.back_color.a = 0.f;
+				logo.set_pos(static_cast<s16>(std::lround(from_x + (m_logo.x - from_x) * move)), static_cast<s16>(std::lround(from_y + (m_logo.y - from_y) * move)));
+				logo.set_size(static_cast<u16>(std::lround(w)), static_cast<u16>(std::lround(h)));
+				add_animated(result, logo.get_compiled(), appear);
+
+				rounded_rect track;
+				track.border_radius = 2;
+				track.back_color = color4f(1.f, 1.f, 1.f, 0.12f);
+				track.set_size(200, 3);
+				track.set_pos(static_cast<s16>((virtual_width - 200) / 2), static_cast<s16>(from_y + m_logo.h * big + 34));
+				add_animated(result, track.get_compiled(), line_alpha * appear);
+
+				rounded_rect fill;
+				fill.border_radius = 2;
+				fill.back_color = c_accent;
+				fill.set_size(static_cast<u16>(std::max(4.f, 200.f * line)), 3);
+				fill.set_pos(track.x, track.y);
+				add_animated(result, fill.get_compiled(), line_alpha * appear);
+			}
+		}
+		else
+		{
+			result.add(m_logo_data ? m_logo.get_compiled() : m_logo_text.get_compiled());
 		}
 
 		if (m_confirm_delete || m_deleting || !m_delete_result.empty())
@@ -1244,9 +1444,10 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::show()
 	{
+		// The first opening has its splash instead of the quick fade
 		m_fade_animation.current = color4f(0.f);
 		m_fade_animation.end = color4f(1.f);
-		m_fade_animation.active = true;
+		m_fade_animation.active = !m_play_intro;
 
 		visible = true;
 

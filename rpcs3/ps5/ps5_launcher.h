@@ -169,6 +169,18 @@ namespace rsx::overlays
 		void layout_confirm();
 
 		animation_color_interpolate m_fade_animation{};
+
+		// The opening: once per run, the logo over a loading line, gliding into
+		// the top bar while the art fades in; then, on every opening, the hero
+		// and the games row rise into place once the list is read
+		bool m_play_intro = false;
+		u64 m_now_us = 0;
+		u64 m_intro_start_us = 0;
+		u64 m_content_start_us = 0;
+		f32 intro_seconds() const;
+		f32 content_seconds() const;
+		bool intro_running() const;
+		void skip_intro();
 	};
 
 	// Run on Big Picture Mode's thread (Emulator::BootBigPictureMode); blocks
