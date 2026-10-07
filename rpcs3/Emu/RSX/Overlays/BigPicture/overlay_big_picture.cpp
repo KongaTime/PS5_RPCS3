@@ -163,8 +163,17 @@ namespace rsx
 			overlayman.attach_thread_input(uid, "Big Picture Mode");
 		}
 
+#ifdef __PROSPERO__
+		// PS5: the title's own launcher (rpcs3/ps5/ps5_launcher.cpp)
+		void open_ps5_launcher();
+#endif
+
 		void open_big_picture_mode()
 		{
+#ifdef __PROSPERO__
+			open_ps5_launcher();
+			return;
+#endif
 			auto& overlayman = g_fxo->get<display_manager>();
 			const auto dialog = overlayman.create<big_picture_dialog>();
 			dialog->show();
