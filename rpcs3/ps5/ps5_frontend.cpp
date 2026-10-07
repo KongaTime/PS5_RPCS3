@@ -407,6 +407,12 @@ namespace
 			}
 		}
 
+		// A stop with nothing to boot after it (on_stop): the title ends once the
+		// main thread's call that saw it is done, if the emulator is still
+		// stopped then. Big Picture Mode hands off to a game by stopping its own
+		// shell and booting the game in one call, and must not end the title
+		atomic_t<bool> stop_pending = false;
+
 		// Runs the calls as they come, until quit is asked for
 		void run()
 		{
@@ -424,6 +430,10 @@ namespace
 					{
 						*wake_up = true;
 						wake_up->notify_one();
+					}
+					if (stop_pending.exchange(false) && Emu.IsStopped())
+					{
+						quit = true;
 					}
 					lock.lock();
 				}
@@ -882,16 +892,21 @@ int run(const char* boot_path)
 		trace("config: shaders compiled asynchronously, without the shader interpreter");
 	}
 
-	// Nothing named to boot: the PS3's own home menu, as the desktop's Boot VSH
+	// Nothing named to boot: RPCS3's Big Picture Mode, the game library on the
+	// display, over the games in /app0/rpcs3/games/; "vsh" named: the PS3's
+	// own home menu, as the desktop's Boot VSH
 	std::string vsh_path;
-	if ((!boot_path || !*boot_path) && !firmware.empty())
+	bool big_picture = false;
+	if (boot_path && (std::string_view(boot_path) == "vsh" || std::string_view(boot_path) == "xmb"))
 	{
 		vsh_path = g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self";
-		if (fs::is_file(vsh_path))
-		{
-			boot_path = vsh_path.c_str();
-			trace("frontend: booting the PS3 home menu, %s", vsh_path);
-		}
+		boot_path = fs::is_file(vsh_path) ? vsh_path.c_str() : nullptr;
+		trace("frontend: booting the PS3 home menu, %s", boot_path ? vsh_path : std::string("missing"));
+	}
+	else if (!boot_path || !*boot_path)
+	{
+		big_picture = true;
+		trace("frontend: nothing named to boot: Big Picture Mode, games from %s", rpcs3::utils::get_games_dir());
 	}
 	rpcs3::utils::configure_logs(true);
 
@@ -923,7 +938,14 @@ int run(const char* boot_path)
 	}
 
 	int status = 0;
-	if (boot_path && *boot_path)
+	bool booted = false;
+	if (big_picture)
+	{
+		booted = Emu.BootBigPictureMode();
+		trace("frontend: Big Picture Mode %s", booted ? "booted" : "failed to boot");
+		status = booted ? 0 : 1;
+	}
+	else if (boot_path && *boot_path)
 	{
 		trace("frontend: Emu.BootGame %s", boot_path);
 		if (const game_boot_result result = Emu.BootGame(boot_path, "", true); result != game_boot_result::no_errors)
@@ -933,6 +955,13 @@ int run(const char* boot_path)
 			status = 1;
 		}
 		else
+		{
+			booted = true;
+		}
+	}
+
+	{
+		if (booted)
 		{
 			trace("frontend: booted; running until the emulation stops");
 			g_booted = true;
@@ -981,15 +1010,20 @@ int run(const char* boot_path)
 			// A reboot the game asks for (sys_sm_shutdown, the home menu's after
 			// rebuilding its database) stops the emulator and then boots again
 			// from after_kill_callback: only a stop without one ends the title
+			// A game Big Picture Mode started returns to it the same way
+			// (Emulator::Kill sets after_kill_callback to BootBigPictureMode);
+			// and the stop that hands the library's shell over to a game is
+			// followed by that game's boot in the same main-thread call, so a
+			// stop ends the title only if nothing runs once that call is done
 			g_emu_callbacks.on_stop = []()
 			{
 				if (!Emu.after_kill_callback)
 				{
-					g_main.request_quit();
+					g_main.stop_pending = true;
 				}
 				else
 				{
-					trace("frontend: the game asked for a reboot");
+					trace("frontend: stopped, booting again (a reboot the game asked for, or back to Big Picture Mode)");
 				}
 			};
 			g_main.run();
