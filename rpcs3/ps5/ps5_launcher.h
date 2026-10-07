@@ -12,14 +12,15 @@
 #include "Emu/RSX/Overlays/BigPicture/overlay_big_picture_game_info.h"
 #include "Emu/game_enumeration.h"
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
 
+struct cfg_root;
+
 namespace rsx::overlays
 {
-	struct home_menu_page;
-
 	struct ps5_launcher_game
 	{
 		big_picture_game_info info;
@@ -125,9 +126,6 @@ namespace rsx::overlays
 		std::unique_ptr<named_thread<std::function<void()>>> m_delete_thread;
 		std::string m_delete_result; // shown until dismissed, when the deletion failed
 		s32 m_first_visible = 0;
-
-		// The page shown on the Library and Settings tabs
-		std::shared_ptr<home_menu_page> m_settings;
 
 		// Background: the selected game's art over the last one's while it fades
 		// in, a dark wash, and smooth fades from the left, the top and the bottom
@@ -257,6 +255,21 @@ namespace rsx::overlays
 		std::unique_ptr<memory_image_info> m_glow_image;
 		void handle_library(pad_button button_press);
 		void compile_library(compiled_resource& result);
+
+		// The Settings tab: the global config's settings by category, the
+		// categories on the left, a category's settings in the middle
+		std::unique_ptr<cfg_root> m_set_cfg;
+		std::vector<game_setting> m_set_rows;
+		s32 m_set_category = 0;
+		s32 m_set_row = 0;
+		s32 m_set_scroll = 0;
+		bool m_set_focus_list = false;
+		std::map<std::string, std::unique_ptr<image_info>> m_set_icons;
+		void open_settings_tab();
+		void load_settings_category();
+		void save_setting(const game_setting& row);
+		void handle_settings(pad_button button_press);
+		void compile_settings(compiled_resource& result);
 
 		animation_color_interpolate m_fade_animation{};
 

@@ -11,7 +11,6 @@
 
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/BigPicture/overlay_big_picture.h"
-#include "Emu/RSX/Overlays/HomeMenu/overlay_home_menu_settings.h"
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
@@ -68,11 +67,6 @@ namespace rsx::overlays
 		// The hints' line, bottom right
 		constexpr s16 c_hints_y = 690;
 
-		// Tab pages' area, below the top bar
-		constexpr s16 c_page_x = 40;
-		constexpr s16 c_page_y = 100;
-		constexpr u16 c_page_w = 1200;
-		constexpr u16 c_page_h = 520;
 
 		// A new game's art fades in over the last one's
 		constexpr u64 c_background_fade_us = 220'000;
@@ -767,8 +761,6 @@ namespace rsx::overlays
 		build_static();
 		fs::create_path(fs::get_config_dir(true) + "covers/");
 
-		m_settings = std::make_shared<home_menu_settings>(c_page_x, c_page_y, c_page_w, c_page_h, false, nullptr);
-		m_settings->is_current_page = true;
 
 		start_reload();
 	}
@@ -1073,10 +1065,16 @@ namespace rsx::overlays
 			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::triangle), "Settings");
 			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Delete");
 		}
-		else if (m_tab != tab::home)
+		else if (m_tab == tab::settings && m_set_focus_list)
 		{
-			hints.emplace_back(resource_config::confirm_button_resource(), "Select");
+			hints.emplace_back(resource_config::confirm_button_resource(), "Change");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Default");
 			hints.emplace_back(resource_config::cancel_button_resource(), "Back");
+		}
+		else if (m_tab == tab::settings)
+		{
+			hints.emplace_back(resource_config::confirm_button_resource(), "Open");
+			hints.emplace_back(resource_config::cancel_button_resource(), "Home");
 		}
 		if (!m_gs_open)
 		{
@@ -1542,7 +1540,7 @@ namespace rsx::overlays
 		}
 		else if (m_tab == tab::settings)
 		{
-			m_settings->on_activate();
+			open_settings_tab();
 		}
 	}
 
@@ -1602,20 +1600,35 @@ namespace rsx::overlays
 			return specs;
 		}
 
+		// A setting by its section ("Video", or "Video/Performance Overlay") and name
 		cfg::_base* find_setting(cfg::node& root, std::string_view section, std::string_view key)
 		{
-			for (cfg::_base* node : root.get_nodes())
+			cfg::node* node = &root;
+			while (!section.empty())
 			{
-				if (node->get_type() != cfg::type::node || node->get_name() != section)
+				const usz slash = section.find('/');
+				const std::string_view name = section.substr(0, slash);
+				section = slash == umax ? std::string_view{} : section.substr(slash + 1);
+				cfg::node* next = nullptr;
+				for (cfg::_base* child : node->get_nodes())
 				{
-					continue;
-				}
-				for (cfg::_base* setting : static_cast<cfg::node*>(node)->get_nodes())
-				{
-					if (setting->get_name() == key)
+					if (child->get_type() == cfg::type::node && child->get_name() == name)
 					{
-						return setting;
+						next = static_cast<cfg::node*>(child);
+						break;
 					}
+				}
+				if (!next)
+				{
+					return nullptr;
+				}
+				node = next;
+			}
+			for (cfg::_base* setting : node->get_nodes())
+			{
+				if (setting->get_name() == key)
+				{
+					return setting;
 				}
 			}
 			return nullptr;
@@ -1628,6 +1641,8 @@ namespace rsx::overlays
 			if (value == "0" && (key == "Preferred SPU Threads" || key == "Anisotropic Filter Override")) return "Auto";
 			if (key == "Resolution Scale" || key == "Master Volume") return value + "%";
 			if (key == "Anisotropic Filter Override") return value + "x";
+			if (key == "Desired Audio Buffer Duration") return value + " ms";
+			if (key == "Opacity (%)") return value + "%";
 			return value;
 		}
 
@@ -2053,6 +2068,449 @@ namespace rsx::overlays
 
 			panel_ref.set_size(panel_w, static_cast<u16>(line2 + 26 - list_top));
 			panel_ref.refresh();
+		}
+	}
+
+	namespace
+	{
+		// The Settings tab: the global config's settings a player reaches for,
+		// by category
+		struct settings_category
+		{
+			const char* name;
+			const char* icon;
+			const char* note;
+			std::vector<game_setting_spec> rows;
+		};
+
+		const std::vector<settings_category>& settings_categories()
+		{
+			static const std::vector<settings_category> categories = []
+			{
+				std::vector<settings_category> result;
+				const auto& game = game_setting_specs();
+				const auto pick = [&](std::string_view first, std::string_view last)
+				{
+					std::vector<game_setting_spec> rows;
+					bool in = false;
+					for (const game_setting_spec& spec : game)
+					{
+						if (spec.key == first) in = true;
+						if (in && *spec.section) rows.push_back(spec);
+						if (spec.key == last) break;
+					}
+					return rows;
+				};
+
+				result.push_back({"Processor", "home/32/gauge-solid.png", "How the PS3's processors are run.", pick("PPU Decoder", "SPU loop detection")});
+
+				std::vector<game_setting_spec> graphics = pick("Resolution Scale", "Disable ZCull Occlusion Queries");
+				graphics.push_back({"Video", "Stretch To Display Area", "Stretch to the screen", "Fills the whole screen instead of keeping the game's shape. Wide games are not affected; 4:3 games look stretched.", {}});
+				result.push_back({"Graphics", "home/32/display-solid.png", "How games are drawn.", std::move(graphics)});
+
+				std::vector<game_setting_spec> audio = pick("Master Volume", "Enable Time Stretching");
+				audio.push_back({"Audio", "Enable Buffering", "Audio buffering", "Keeps some sound in hand, so short hitches do not break it up. Off lowers the delay a little.", {}});
+				audio.push_back({"Audio", "Desired Audio Buffer Duration", "Buffer length", "How much sound is kept in hand. Longer is steadier, shorter answers sooner.", {"20", "34", "50", "75", "100"}});
+				result.push_back({"Audio", "home/32/headphones-solid.png", "How games sound.", std::move(audio)});
+
+				result.push_back({"Overlays", "home/32/sliders-solid.png", "What is drawn over the game.",
+				{
+					{"Video/Performance Overlay", "Enabled", "Performance overlay", "Shows the frame rate and the load on the processors over the game.", {}},
+					{"Video/Performance Overlay", "Detail level", "Overlay detail", "How much the performance overlay shows: from the frame rate alone to every thread's load.", {}},
+					{"Video/Performance Overlay", "Position", "Overlay position", "The corner of the screen the performance overlay sits in.", {}},
+					{"Video/Performance Overlay", "Opacity (%)", "Overlay opacity", "How solid the performance overlay's background is.", {"25", "50", "70", "85", "100"}},
+					{"Miscellaneous", "Show trophy popups", "Trophy pop-ups", "Shows a pop-up when a trophy is earned.", {}},
+					{"Miscellaneous", "Show PPU compilation hint", "Code compiling notice", "Shows a notice while a game's code is being compiled, the first time it starts.", {}},
+					{"Miscellaneous", "Show shader compilation hint", "Shader compiling notice", "Shows a notice while new shaders are being built.", {}},
+				}});
+
+				result.push_back({"System", "home/32/gamepad-solid.png", "The PS3 the games see.",
+				{
+					{"System", "Language", "Language", "The language the PS3 tells games it is set to. Many games follow it for their text and voices.", {}},
+					{"System", "Enter button assignment", "Confirm button", "Which button confirms in the PS3's own dialogs and in this launcher: cross or circle.", {}},
+				}});
+				return result;
+			}();
+			return categories;
+		}
+
+		// A setting's default as this title has it: the shader interpreter, the
+		// emulator's own default, froze the console and is not offered
+		std::string usable_default(const cfg::_base& setting, const std::vector<std::string>& options)
+		{
+			const std::string value = setting.def_to_string();
+			if (std::find(options.begin(), options.end(), value) != options.end())
+			{
+				return value;
+			}
+			return options.empty() ? value : options.front();
+		}
+	}
+
+	void ps5_launcher_dialog::open_settings_tab()
+	{
+		m_set_cfg = load_global_config();
+		m_set_focus_list = false;
+		load_settings_category();
+	}
+
+	void ps5_launcher_dialog::load_settings_category()
+	{
+		m_set_rows.clear();
+		m_set_row = 0;
+		m_set_scroll = 0;
+		if (!m_set_cfg)
+		{
+			return;
+		}
+
+		const settings_category& category = settings_categories()[m_set_category];
+		for (const game_setting_spec& spec : category.rows)
+		{
+			cfg::_base* setting = find_setting(*m_set_cfg, spec.section, spec.key);
+			if (!setting)
+			{
+				launcher_log.error("Settings: no setting %s/%s", spec.section, spec.key);
+				continue;
+			}
+			game_setting row;
+			row.section = spec.section;
+			row.key = spec.key;
+			row.label = spec.label;
+			row.help = spec.help;
+			row.options = spec.options.empty() ? setting->to_list() : spec.options;
+			row.value = setting->to_string();
+			if (std::find(row.options.begin(), row.options.end(), row.value) == row.options.end())
+			{
+				row.options.insert(row.options.begin(), row.value);
+			}
+			row.global = usable_default(*setting, row.options); // here: the default
+			m_set_rows.push_back(std::move(row));
+		}
+	}
+
+	void ps5_launcher_dialog::save_setting(const game_setting& row)
+	{
+		cfg::_base* setting = m_set_cfg ? find_setting(*m_set_cfg, row.section, row.key) : nullptr;
+		if (!setting || !setting->from_string(row.value))
+		{
+			launcher_log.error("Settings: could not set %s/%s to %s", row.section, row.key, row.value);
+			return;
+		}
+		// config.yml, written whole as the emulator writes it; the next game
+		// boots with it (and the running shell takes it, where it can)
+		Emulator::SaveSettings(m_set_cfg->to_string(), "");
+		launcher_log.notice("Settings: %s/%s = %s", row.section, row.key, row.value);
+	}
+
+	void ps5_launcher_dialog::handle_settings(pad_button button_press)
+	{
+		const bool up = button_press == pad_button::dpad_up || button_press == pad_button::ls_up;
+		const bool down = button_press == pad_button::dpad_down || button_press == pad_button::ls_down;
+		const bool left = button_press == pad_button::dpad_left || button_press == pad_button::ls_left;
+		const bool right = button_press == pad_button::dpad_right || button_press == pad_button::ls_right;
+		const s32 categories = static_cast<s32>(settings_categories().size());
+
+		if (!m_set_focus_list)
+		{
+			// The categories
+			if ((up && m_set_category > 0) || (down && m_set_category + 1 < categories))
+			{
+				m_set_category += up ? -1 : 1;
+				play_sound(sound_effect::cursor);
+				load_settings_category();
+			}
+			else if ((button_press == pad_button::cross || right) && !m_set_rows.empty())
+			{
+				m_set_focus_list = true;
+				play_sound(sound_effect::accept);
+				layout_hints();
+			}
+			else if (button_press == pad_button::circle)
+			{
+				set_tab(tab::home);
+			}
+			return;
+		}
+
+		// The settings of the category
+		if (button_press == pad_button::circle)
+		{
+			m_set_focus_list = false;
+			play_sound(sound_effect::cancel);
+			layout_hints();
+			return;
+		}
+		if (up || down)
+		{
+			const s32 next = m_set_row + (up ? -1 : 1);
+			if (next >= 0 && next < static_cast<s32>(m_set_rows.size()))
+			{
+				m_set_row = next;
+				play_sound(sound_effect::cursor);
+			}
+			return;
+		}
+		if (m_set_row < 0 || static_cast<usz>(m_set_row) >= m_set_rows.size())
+		{
+			return;
+		}
+		game_setting& row = m_set_rows[m_set_row];
+		if (left || right || button_press == pad_button::cross)
+		{
+			const auto it = std::find(row.options.begin(), row.options.end(), row.value);
+			const s32 at = static_cast<s32>(it - row.options.begin());
+			const s32 count = static_cast<s32>(row.options.size());
+			row.value = row.options[(at + (left ? count - 1 : 1)) % count];
+			play_sound(sound_effect::cursor);
+			save_setting(row);
+		}
+		else if (button_press == pad_button::square && row.value != row.global)
+		{
+			row.value = row.global;
+			play_sound(sound_effect::cancel);
+			save_setting(row);
+		}
+	}
+
+	void ps5_launcher_dialog::compile_settings(compiled_resource& result)
+	{
+		// The Library's deep blue and glow
+		{
+			overlay_element base;
+			base.set_size(virtual_width, virtual_height);
+			base.back_color = c_library_blue;
+			result.add(base.get_compiled());
+		}
+		const auto glow = [&](s16 cx, s16 cy, u16 w, u16 h, const color4f& color)
+		{
+			image_view view;
+			view.set_raw_image(m_glow_image.get());
+			view.back_color.a = 0.f;
+			view.fore_color = color;
+			view.set_pos(static_cast<s16>(cx - w / 2), static_cast<s16>(cy - h / 2));
+			view.set_size(w, h);
+			result.add(view.get_compiled());
+		};
+		glow(640, 340, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.45f));
+		glow(620, 360, 900, 700, color4f(c_accent.r, c_accent.g, c_accent.b, 0.06f));
+
+		const auto card = [&](s16 x, s16 y, u16 w, u16 h)
+		{
+			rounded_rect panel;
+			panel.set_pos(x, y);
+			panel.set_size(w, h);
+			panel.border_radius = 24;
+			panel.back_color = color4f(0.02f, 0.04f, 0.16f, 0.78f);
+			result.add(panel.get_compiled());
+			rounded_rect edge;
+			edge.set_pos(static_cast<s16>(x + 24), y);
+			edge.set_size(static_cast<u16>(w - 48), 3);
+			edge.border_radius = 2;
+			edge.back_color = c_accent;
+			result.add(edge.get_compiled());
+		};
+		const auto text = [&](std::string_view s, u16 size, std::string_view font_name, const color4f& colour, s16 x, f32 mid) -> std::unique_ptr<label>
+		{
+			auto l = make_label(s, size, font_name, colour);
+			place(*l, x, mid);
+			result.add(l->get_compiled());
+			return l;
+		};
+
+		// The categories, on the left
+		constexpr s16 top = 96;
+		constexpr u16 height = 552;
+		card(40, top, 250, height);
+		text(spaced("SETTINGS"), 9, f_semibold, c_accent, 66, top + 38.f);
+		const auto& categories = settings_categories();
+		for (usz c = 0; c < categories.size(); c++)
+		{
+			const bool selected = static_cast<s32>(c) == m_set_category;
+			const bool lit = selected && !m_set_focus_list;
+			const f32 y = top + 64.f + c * 56.f;
+			if (selected)
+			{
+				rounded_rect pill;
+				pill.set_pos(54, static_cast<s16>(y));
+				pill.set_size(222, 46);
+				pill.border_radius = 23;
+				pill.back_color = lit ? c_accent : color4f(1.f, 1.f, 1.f, 0.12f);
+				result.add(pill.get_compiled());
+			}
+			// Icons load once and are kept, by path
+			if (!m_set_icons.contains(categories[c].icon))
+			{
+				auto& kept = m_set_icons[categories[c].icon];
+				if ((kept = resource_config::load_icon(categories[c].icon)))
+				{
+					kept->dirty = true;
+				}
+			}
+			if (const auto it = m_set_icons.find(categories[c].icon); it != m_set_icons.end() && it->second)
+			{
+				image_view icon;
+				icon.set_raw_image(it->second.get());
+				icon.set_size(18, 18);
+				icon.set_pos(72, static_cast<s16>(y + 14));
+				icon.back_color.a = 0.f;
+				icon.fore_color = lit ? c_button_text : (selected ? c_text : c_text_dim);
+				result.add(icon.get_compiled());
+			}
+			text(categories[c].name, 14, selected ? f_bold : f_medium, lit ? c_button_text : (selected ? c_text : c_text_dim), 102, y + 23.f);
+		}
+		{
+			label note;
+			note.set_font(10, f_regular);
+			note.fore_color = c_text_dim;
+			note.back_color.a = 0.f;
+			note.set_padding(0);
+			note.set_wrap_text(true);
+			note.set_text("Saved at once, used from the next game started. Games with settings of their own keep those.");
+			note.set_pos(64, static_cast<s16>(top + height - 80));
+			note.set_size(204, 60);
+			note.auto_resize(false, 204, 60);
+			result.add(note.get_compiled());
+		}
+
+		// The category's settings, in the middle
+		const settings_category& category = categories[m_set_category];
+		constexpr s16 list_x = 310;
+		constexpr u16 list_w = 600;
+		card(list_x, top, list_w, height);
+		text(category.name, 22, f_bold, c_text, list_x + 32, top + 44.f);
+		text(category.note, 11, f_regular, c_text_dim, list_x + 32, top + 72.f);
+
+		constexpr f32 row_h = 44.f;
+		constexpr s32 visible = 10;
+		if (m_set_row < m_set_scroll) m_set_scroll = m_set_row;
+		if (m_set_row >= m_set_scroll + visible) m_set_scroll = m_set_row - visible + 1;
+		for (s32 r = m_set_scroll; r < static_cast<s32>(m_set_rows.size()) && r < m_set_scroll + visible; r++)
+		{
+			const game_setting& row = m_set_rows[r];
+			const f32 y = top + 96.f + (r - m_set_scroll) * row_h;
+			const bool selected = m_set_focus_list && r == m_set_row;
+			const bool changed = row.value != row.global;
+			const f32 mid = y + row_h / 2.f;
+			const color4f ink = selected ? c_button_text : (changed ? c_text : c_text_dim);
+
+			if (selected)
+			{
+				rounded_rect pill;
+				pill.set_pos(list_x + 16, static_cast<s16>(y + 3));
+				pill.set_size(list_w - 32, static_cast<u16>(row_h - 6));
+				pill.border_radius = static_cast<u16>((row_h - 6) / 2);
+				pill.back_color = c_accent;
+				result.add(pill.get_compiled());
+			}
+			else
+			{
+				overlay_element rule;
+				rule.set_pos(list_x + 32, static_cast<s16>(y + row_h - 1));
+				rule.set_size(list_w - 64, 1);
+				rule.back_color = color4f(1.f, 1.f, 1.f, 0.07f);
+				result.add(rule.get_compiled());
+			}
+			if (changed)
+			{
+				ellipse dot;
+				dot.set_size(6, 6);
+				dot.set_pos(list_x + 32, static_cast<s16>(mid - 3));
+				dot.back_color = selected ? c_button_text : c_accent;
+				result.add(dot.get_compiled());
+			}
+			text(row.label, 13, selected ? f_bold : f_medium, ink, list_x + 46, mid);
+
+			auto value = make_label(setting_text(row.key, row.value), 13, f_semibold, selected ? c_button_text : (changed ? c_accent : c_text_dim));
+			const s16 right = static_cast<s16>(list_x + list_w - (selected ? 52 : 34));
+			place(*value, static_cast<s16>(right - value->w), mid);
+			result.add(value->get_compiled());
+			if (selected)
+			{
+				text("‹", 16, f_bold, c_button_text, static_cast<s16>(value->x - 18), mid);
+				text("›", 16, f_bold, c_button_text, static_cast<s16>(right + 10), mid);
+			}
+		}
+		if (static_cast<s32>(m_set_rows.size()) > visible)
+		{
+			// Where in the list
+			const f32 track = visible * row_h;
+			const f32 thumb = track * visible / m_set_rows.size();
+			rounded_rect bar;
+			bar.set_pos(list_x + list_w - 14, static_cast<s16>(top + 96 + (track - thumb) * m_set_scroll / (m_set_rows.size() - visible)));
+			bar.set_size(4, static_cast<u16>(thumb));
+			bar.border_radius = 2;
+			bar.back_color = color4f(1.f, 1.f, 1.f, 0.25f);
+			result.add(bar.get_compiled());
+		}
+
+		// The setting, explained, on the right
+		constexpr s16 info_x = 930;
+		constexpr u16 info_w = 310;
+		card(info_x, top, info_w, height);
+		if (!m_set_rows.empty())
+		{
+			const game_setting& row = m_set_rows[std::clamp<s32>(m_set_row, 0, static_cast<s32>(m_set_rows.size()) - 1)];
+			text(spaced(m_set_focus_list ? "SETTING" : "IN THIS CATEGORY"), 9, f_semibold, c_accent, info_x + 26, top + 38.f);
+			if (m_set_focus_list)
+			{
+				label name;
+				name.set_font(17, f_bold);
+				name.fore_color = c_text;
+				name.back_color.a = 0.f;
+				name.set_padding(0);
+				name.set_wrap_text(true);
+				name.set_text(row.label);
+				name.set_pos(info_x + 26, top + 54);
+				name.set_size(info_w - 52, 60);
+				name.auto_resize(false, info_w - 52, 60);
+				result.add(name.get_compiled());
+
+				label help;
+				help.set_font(12, f_regular);
+				help.fore_color = c_text_dim;
+				help.back_color.a = 0.f;
+				help.set_padding(0);
+				help.set_wrap_text(true);
+				help.set_text(row.help);
+				help.set_pos(info_x + 26, static_cast<s16>(name.y + name.h + 14));
+				help.set_size(info_w - 52, 200);
+				help.auto_resize(false, info_w - 52, 200);
+				result.add(help.get_compiled());
+
+				const f32 y = help.y + help.h + 30.f;
+				overlay_element rule;
+				rule.set_pos(info_x + 26, static_cast<s16>(y - 14));
+				rule.set_size(info_w - 52, 1);
+				rule.back_color = color4f(1.f, 1.f, 1.f, 0.12f);
+				result.add(rule.get_compiled());
+				text("Default", 12, f_medium, c_text_dim, info_x + 26, y + 6.f);
+				auto def = make_label(setting_text(row.key, row.global), 12, f_semibold, c_text);
+				place(*def, static_cast<s16>(info_x + info_w - 26 - def->w), y + 6.f);
+				result.add(def->get_compiled());
+				text("Now", 12, f_medium, c_text_dim, info_x + 26, y + 32.f);
+				auto now = make_label(setting_text(row.key, row.value), 12, f_semibold, row.value != row.global ? c_accent : c_text);
+				place(*now, static_cast<s16>(info_x + info_w - 26 - now->w), y + 32.f);
+				result.add(now->get_compiled());
+			}
+			else
+			{
+				// The category's settings at a glance
+				f32 y = top + 70.f;
+				for (const game_setting& each : m_set_rows)
+				{
+					if (y > top + height - 30) break;
+					auto name = make_label("", 11, f_medium, c_text_dim);
+					fit_text(*name, each.label, 160);
+					place(*name, info_x + 26, y);
+					result.add(name->get_compiled());
+					auto value = make_label("", 11, f_semibold, each.value != each.global ? c_accent : c_text);
+					fit_text(*value, setting_text(each.key, each.value), 110);
+					place(*value, static_cast<s16>(info_x + info_w - 26 - value->w), y);
+					result.add(value->get_compiled());
+					y += 26.f;
+				}
+			}
 		}
 	}
 
@@ -2940,13 +3398,9 @@ namespace rsx::overlays
 			}
 		}
 
-		if (m_tab == tab::settings)
-		{
-			m_settings->update(timestamp_us);
-		}
 	}
 
-	void ps5_launcher_dialog::on_button_pressed(pad_button button_press, bool is_auto_repeat)
+	void ps5_launcher_dialog::on_button_pressed(pad_button button_press, bool /*is_auto_repeat*/)
 	{
 		if (m_fade_animation.active)
 		{
@@ -3002,14 +3456,9 @@ namespace rsx::overlays
 			return;
 		}
 
-		if (m_tab != tab::home)
+		if (m_tab == tab::settings)
 		{
-			home_menu_page& page = *m_settings;
-			// Circle at a page's top goes back to Home
-			if (page.handle_button_press(button_press, is_auto_repeat, m_auto_repeat_ms_interval) == page_navigation::exit)
-			{
-				set_tab(tab::home);
-			}
+			handle_settings(button_press);
 			return;
 		}
 
@@ -3079,7 +3528,7 @@ namespace rsx::overlays
 
 		compiled_resource result;
 		result.add(m_backdrop.get_compiled());
-		if (m_tab != tab::library || m_gs_open)
+		if (m_tab == tab::home || m_gs_open)
 		{
 			compiled_resource art;
 			if (m_background_fading)
@@ -3093,7 +3542,7 @@ namespace rsx::overlays
 			add_animated(result, art, step(0.f, 0.7f));
 		}
 		result.add(m_wash.get_compiled());
-		if (m_tab != tab::library || m_gs_open)
+		if (m_tab == tab::home || m_gs_open)
 		{
 			result.add(m_fade_left.get_compiled());
 		}
@@ -3172,12 +3621,7 @@ namespace rsx::overlays
 		}
 		else
 		{
-			// A darker wash under the stock pages, for their text
-			overlay_element dim;
-			dim.set_size(virtual_width, virtual_height);
-			dim.back_color = color4f(0.f, 0.f, 0.f, 0.7f);
-			result.add(dim.get_compiled());
-			result.add(m_settings->get_compiled());
+			compile_settings(result);
 		}
 
 		// The top bar comes down after the logo has arrived
