@@ -27,6 +27,8 @@
 LOG_CHANNEL(launcher_log, "Launcher");
 
 extern std::string g_cfg_defaults; // Emu/System.cpp: the config's defaults, as text
+void ps5_play_sound_file(const std::string& path); // ps5_sound.cpp
+void ps5_stop_sounds();
 
 namespace rsx::overlays
 {
@@ -734,15 +736,31 @@ namespace rsx::overlays
 			out.add(faded, dx, dy);
 		}
 
-		// Its timeline, in seconds from the launcher's first frame
-		constexpr f32 c_intro_logo_in = 0.1f;      // the logo fades in, centred
-		constexpr f32 c_intro_line = 0.25f;        // the loading line draws under it
-		constexpr f32 c_intro_move = 1.05f;        // the logo glides into the top bar
+		// Its timeline, in seconds from the launcher's first frame: two screens,
+		// as a PS1 started. On white, shards fly in and lock into a diamond
+		// around the mark, and the maker's name comes up under it; on black,
+		// the logo and its fine print, then the logo glides into the top bar.
+		// The sound (PS5_RPCS3Title's ps5/tools/intro-sound.py) keeps the same
+		// moments: move both together
+		constexpr f32 c_intro_white_in = 0.45f;    // the screen turns white over this
+		constexpr f32 c_intro_shards = 0.15f;      // the shards set off
+		constexpr f32 c_intro_lock = 1.5f;         // they lock into the diamond
+		constexpr f32 c_intro_name = 1.85f;        // the maker's name comes up
+		constexpr f32 c_intro_white_out = 3.5f;    // the white screen fades to black
+		constexpr f32 c_intro_logo_in = 4.2f;      // the logo comes up on black
+		constexpr f32 c_intro_print = 4.6f;        // its fine print
+		constexpr f32 c_intro_move = 6.0f;         // the logo glides into the top bar
 		constexpr f32 c_intro_move_length = 0.6f;
-		constexpr f32 c_intro_reveal = 1.1f;       // the splash's backdrop fades away
-		constexpr f32 c_intro_bar = 1.4f;          // the tabs and the user come down
-		constexpr f32 c_intro_content = 1.45f;     // the hero and the row may start
-		constexpr f32 c_intro_end = 2.2f;
+		constexpr f32 c_intro_reveal = 6.05f;      // the splash's backdrop fades away
+		constexpr f32 c_intro_bar = 6.35f;         // the tabs and the user come down
+		constexpr f32 c_intro_content = 6.4f;      // the hero and the row may start
+		constexpr f32 c_intro_end = 7.15f;
+
+		// The white screen's diamond: its centre and half its diagonal
+		constexpr f32 c_diamond_x = 640.f; // the middle of the overlays' 1280-pixel width
+		constexpr f32 c_diamond_y = 300.f;
+		constexpr f32 c_diamond_r = 170.f;
+		constexpr u16 c_mark_size = 150;
 
 		// Each opening's own, from when the list is read (and the splash allows)
 		constexpr f32 c_content_end = 1.3f;
@@ -879,6 +897,14 @@ namespace rsx::overlays
 			place(m_logo_text, c_margin, c_bar_y);
 		}
 		const s16 logo_right = m_logo_data ? static_cast<s16>(m_logo.x + m_logo.w) : static_cast<s16>(m_logo_text.x + m_logo_text.w);
+
+		// The intro's white screen and its words
+		m_mark_data = load_image("/app0/assets/launcher/mark.png");
+		style_label(m_intro_name, spaced("KONGATIME"), 20, f_semibold, color4f(0.05f, 0.1f, 0.3f, 1.f));
+		m_intro_name.set_pos(static_cast<s16>((virtual_width - m_intro_name.w) / 2), 0);
+		place(m_intro_name, m_intro_name.x, c_diamond_y + c_diamond_r + 52.f);
+		style_label(m_intro_print, "RPCS3 is free software, under the GNU General Public License, version 2.", 10, f_regular, color4f(0.6f, 0.63f, 0.72f, 1.f));
+		m_intro_print.set_pos(static_cast<s16>((virtual_width - m_intro_print.w) / 2), 0);
 
 		m_bar_divider.set_pos(static_cast<s16>(logo_right + 22), c_bar_y - 12);
 		m_bar_divider.set_size(1, 24);
@@ -2286,6 +2312,115 @@ namespace rsx::overlays
 		}
 	}
 
+	// The intro's white screen: eight shards that fly in turning and lock into
+	// a diamond around the mark, a flash and a gold rim as they do, and the
+	// maker's name under it
+	void ps5_launcher_dialog::compile_intro_white(compiled_resource& result, f32 intro)
+	{
+		const f32 out = 1.f - ease_in_out(progress(intro, c_intro_white_out, 0.5f));
+		const f32 locked = intro >= c_intro_lock ? 1.f : 0.f;
+
+		overlay_element paper;
+		paper.set_size(virtual_width, virtual_height);
+		paper.back_color = color4f(1.f, 1.f, 1.f, 1.f);
+		add_animated(result, paper.get_compiled(), ease_out(progress(intro, 0.f, c_intro_white_in)) * out);
+
+		const auto shape = [&](std::initializer_list<std::pair<f32, f32>> points, const color4f& color)
+		{
+			compiled_resource::command cmd;
+			cmd.config.color = color;
+			cmd.config.primitives = primitive_type::triangle_strip;
+			cmd.config.disable_vertex_snap = true;
+			for (const auto& [x, y] : points)
+			{
+				vertex v;
+				v.vec4(x, y, 0.f, 0.f);
+				cmd.verts.push_back(v);
+			}
+			compiled_resource part;
+			part.append(cmd);
+			result.add(part);
+		};
+
+		// Flying in, slowing as they arrive; then a small pop as they lock
+		const f32 fly = ease_out(progress(intro, c_intro_shards, c_intro_lock - c_intro_shards));
+		const f32 pop = 1.f + 0.06f * locked * (1.f - ease_out(progress(intro, c_intro_lock, 0.4f)));
+		const f32 shards_alpha = progress(intro, c_intro_shards, 0.3f) * out;
+		const f32 flash = 0.75f * locked * (1.f - ease_out(progress(intro, c_intro_lock, 0.45f))) * out;
+
+		// The facets: from the centre to the corners and the middles of the
+		// sides, shaded as a cut stone lit from the top left
+		constexpr f32 r = c_diamond_r;
+		static constexpr std::pair<f32, f32> rim[8]{{0.f, -r}, {r / 2, -r / 2}, {r, 0.f}, {r / 2, r / 2}, {0.f, r}, {-r / 2, r / 2}, {-r, 0.f}, {-r / 2, -r / 2}};
+		const color4f deep(0.03f, 0.09f, 0.36f, 1.f);
+		const color4f bright(0.36f, 0.68f, 1.f, 1.f);
+		for (int i = 0; i < 8; i++)
+		{
+			const auto [ax, ay] = rim[i];
+			const auto [bx, by] = rim[(i + 1) % 8];
+			const f32 mx = (ax + bx) / 3.f, my = (ay + by) / 3.f; // its centroid
+			const f32 angle = std::atan2(my, mx);
+			const f32 light = 0.5f + 0.5f * std::cos(angle + 2.356f);
+
+			// Out along its own direction, and turned about its centroid
+			const f32 length = std::hypot(mx, my);
+			const f32 away = (1.f - fly) * 760.f;
+			const f32 dx = mx / length * away, dy = my / length * away;
+			const f32 turn = (1.f - fly) * (i % 2 ? 2.2f : -2.2f);
+			const f32 cs = std::cos(turn), sn = std::sin(turn);
+			const auto at = [&](f32 x, f32 y) -> std::pair<f32, f32>
+			{
+				const f32 lx = x - mx, ly = y - my;
+				return {c_diamond_x + (mx + lx * cs - ly * sn + dx) * pop, c_diamond_y + (my + lx * sn + ly * cs + dy) * pop};
+			};
+
+			const color4f color(deep.r + (bright.r - deep.r) * light, deep.g + (bright.g - deep.g) * light, deep.b + (bright.b - deep.b) * light, shards_alpha);
+			shape({at(0.f, 0.f), at(ax, ay), at(bx, by)}, color);
+			if (flash > 0.f)
+			{
+				shape({at(0.f, 0.f), at(ax, ay), at(bx, by)}, color4f(1.f, 1.f, 1.f, flash));
+			}
+		}
+
+		// The gold rim, drawn on as they lock
+		if (const f32 rim_alpha = ease_out(progress(intro, c_intro_lock, 0.3f)) * out; rim_alpha > 0.f)
+		{
+			const color4f gold(0.98f, 0.76f, 0.24f, rim_alpha);
+			constexpr f32 width = 3.f;
+			for (int i = 0; i < 8; i += 2)
+			{
+				const auto [ax, ay] = rim[i];
+				const auto [bx, by] = rim[(i + 2) % 8];
+				const f32 x0 = c_diamond_x + ax * pop, y0 = c_diamond_y + ay * pop;
+				const f32 x1 = c_diamond_x + bx * pop, y1 = c_diamond_y + by * pop;
+				const f32 length = std::hypot(x1 - x0, y1 - y0);
+				const f32 ux = (x1 - x0) / length, uy = (y1 - y0) / length;
+				const f32 nx = -uy * width / 2.f, ny = ux * width / 2.f;
+				// Each side a little long, so the corners close
+				const f32 sx = x0 - ux * width / 2.f, sy = y0 - uy * width / 2.f;
+				const f32 ex = x1 + ux * width / 2.f, ey = y1 + uy * width / 2.f;
+				shape({{sx + nx, sy + ny}, {sx - nx, sy - ny}, {ex + nx, ey + ny}, {ex - nx, ey - ny}}, gold);
+			}
+		}
+
+		// The mark, landing in the middle as the shards lock
+		if (m_mark_data)
+		{
+			const f32 land = ease_out(progress(intro, c_intro_lock - 0.05f, 0.4f));
+			const f32 size = c_mark_size * (0.82f + 0.18f * land) * pop;
+			image_view mark;
+			mark.set_raw_image(m_mark_data.get());
+			mark.back_color.a = 0.f;
+			mark.set_size(static_cast<u16>(std::lround(size)), static_cast<u16>(std::lround(size)));
+			mark.set_pos(static_cast<s16>(std::lround(c_diamond_x - size / 2.f)), static_cast<s16>(std::lround(c_diamond_y - size / 2.f)));
+			add_animated(result, mark.get_compiled(), ease_out(progress(intro, c_intro_lock - 0.05f, 0.3f)) * out);
+		}
+
+		// The maker's name
+		const f32 name = ease_out(progress(intro, c_intro_name, 0.5f));
+		add_animated(result, m_intro_name.get_compiled(), name * out, 0.f, 8.f * (1.f - name));
+	}
+
 	void ps5_launcher_dialog::compile_settings(compiled_resource& result)
 	{
 		// The Library's deep blue and glow
@@ -2550,7 +2685,9 @@ namespace rsx::overlays
 
 	void ps5_launcher_dialog::skip_intro()
 	{
-		// Straight to the end: both clocks run back past their last step
+		// Straight to the end: both clocks run back past their last step, and
+		// the intro's sound fades
+		ps5_stop_sounds();
 		constexpr u64 far = 30'000'000;
 		if (m_intro_start_us && m_now_us > far)
 		{
@@ -3320,6 +3457,10 @@ namespace rsx::overlays
 			{
 				m_intro_start_us = timestamp_us;
 			}
+			if (m_play_intro && !std::exchange(m_intro_sound_started, true))
+			{
+				ps5_play_sound_file("/app0/assets/launcher/intro.wav");
+			}
 			if (!m_content_start_us && !m_loading)
 			{
 				m_content_start_us = timestamp_us;
@@ -3661,21 +3802,25 @@ namespace rsx::overlays
 			add_animated(result, hints, std::min(bar, step(0.6f)));
 		}
 
-		// The splash: its backdrop over everything until it makes way, and the
-		// logo, which ends as the top bar's own
+		// The splash: black over everything until it makes way, the white
+		// screen over that, and the logo, which ends as the top bar's own
 		if (intro < c_intro_move + c_intro_move_length + 0.1f)
 		{
 			overlay_element cover;
 			cover.set_size(virtual_width, virtual_height);
-			cover.back_color = c_backdrop;
+			cover.back_color = color4f(0.f, 0.f, 0.f, 1.f);
 			add_animated(result, cover.get_compiled(), 1.f - ease_in_out(progress(intro, c_intro_reveal, 0.6f)));
 
-			const f32 line = ease_out(progress(intro, c_intro_line, 0.75f));
-			const f32 line_alpha = 1.f - progress(intro, c_intro_move - 0.1f, 0.25f);
-			const f32 move = ease_in_out(progress(intro, c_intro_move, c_intro_move_length));
-			const f32 appear = ease_out(progress(intro, c_intro_logo_in, 0.5f));
+			if (intro < c_intro_white_out + 0.6f)
+			{
+				compile_intro_white(result, intro);
+			}
 
-			if (m_logo_data)
+			const f32 print_alpha = 1.f - progress(intro, c_intro_move - 0.1f, 0.25f);
+			const f32 move = ease_in_out(progress(intro, c_intro_move, c_intro_move_length));
+			const f32 appear = ease_out(progress(intro, c_intro_logo_in, 0.6f));
+
+			if (m_logo_data && appear > 0.f)
 			{
 				// From 2.5 times its size in the middle (growing a little as it
 				// fades in) to its place in the bar
@@ -3692,19 +3837,9 @@ namespace rsx::overlays
 				logo.set_size(static_cast<u16>(std::lround(w)), static_cast<u16>(std::lround(h)));
 				add_animated(result, logo.get_compiled(), appear);
 
-				rounded_rect track;
-				track.border_radius = 2;
-				track.back_color = color4f(1.f, 1.f, 1.f, 0.12f);
-				track.set_size(200, 3);
-				track.set_pos(static_cast<s16>((virtual_width - 200) / 2), static_cast<s16>(from_y + m_logo.h * big + 34));
-				add_animated(result, track.get_compiled(), line_alpha * appear);
-
-				rounded_rect fill;
-				fill.border_radius = 2;
-				fill.back_color = c_accent;
-				fill.set_size(static_cast<u16>(std::max(4.f, 200.f * line)), 3);
-				fill.set_pos(track.x, track.y);
-				add_animated(result, fill.get_compiled(), line_alpha * appear);
+				// The fine print under it, as a PS1's licence line
+				place(m_intro_print, m_intro_print.x, from_y + m_logo.h * big + 46.f);
+				add_animated(result, m_intro_print.get_compiled(), print_alpha * ease_out(progress(intro, c_intro_print, 0.5f)));
 			}
 		}
 		else

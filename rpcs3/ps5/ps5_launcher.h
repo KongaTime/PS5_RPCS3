@@ -151,6 +151,9 @@ namespace rsx::overlays
 		image_view m_logo;
 		std::unique_ptr<image_info> m_logo_data;
 		label m_logo_text; // without the logo's image
+		std::unique_ptr<image_info> m_mark_data; // the intro's white screen
+		label m_intro_name;
+		label m_intro_print;
 		overlay_element m_bar_divider;
 		std::vector<std::unique_ptr<label>> m_tab_labels;
 		rounded_rect m_tab_underline;
@@ -270,6 +273,7 @@ namespace rsx::overlays
 		void save_setting(const game_setting& row);
 		void handle_settings(pad_button button_press);
 		void compile_settings(compiled_resource& result);
+		void compile_intro_white(compiled_resource& result, f32 intro);
 
 		animation_color_interpolate m_fade_animation{};
 
@@ -279,6 +283,7 @@ namespace rsx::overlays
 		bool m_play_intro = false;
 		u64 m_now_us = 0;
 		u64 m_intro_start_us = 0;
+		bool m_intro_sound_started = false;
 		u64 m_content_start_us = 0;
 		f32 intro_seconds() const;
 		f32 content_seconds() const;
