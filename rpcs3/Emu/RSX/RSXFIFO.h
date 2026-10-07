@@ -145,6 +145,7 @@ namespace rsx
 
 			u32 m_cache_addr = 0;
 			u32 m_cache_size = 0;
+			mutable bool m_in_local_memory = false; // PS5 fork: see translate_address
 			alignas(64) std::byte m_cache[8][128];
 
 		public:

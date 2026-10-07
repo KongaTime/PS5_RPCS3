@@ -18,35 +18,6 @@ using spu_rdata_t = std::byte[128];
 extern void mov_rdata(spu_rdata_t& _dst, const spu_rdata_t& _src);
 extern bool cmp_rdata(const spu_rdata_t& _lhs, const spu_rdata_t& _rhs);
 
-// PS5 fork: the address of a FIFO offset that is not mapped yet because
-// nothing is io-mapped at all (the context's first commands, queued before the
-// game's first io map; see fetch_u32). Waits up to five seconds for a mapping
-static u32 wait_for_first_iomap(const rsx::rsx_iomap_table* table, u32 offset)
-{
-	const auto nothing_mapped = [table]
-	{
-		return std::all_of(table->ea.begin(), table->ea.end(), [](const atomic_t<u32>& ea) { return ea == umax; });
-	};
-
-	if (!nothing_mapped())
-	{
-		return umax;
-	}
-
-	static atomic_t<bool> s_said = false;
-	if (!s_said.exchange(true))
-	{
-		rsx_log.warning("FIFO: nothing is io-mapped yet; waiting for the command queue at offset 0x%x to be mapped", offset);
-	}
-
-	const u64 start = get_system_time();
-	while (nothing_mapped() && !Emu.IsStopped() && get_system_time() - start < 5'000'000)
-	{
-		std::this_thread::sleep_for(std::chrono::microseconds(100));
-	}
-
-	return table->get_addr(offset);
-}
 
 namespace rsx
 {
@@ -61,7 +32,28 @@ namespace rsx
 
 		u32 FIFO_control::translate_address(u32 address) const
 		{
-			return m_iotable->get_addr(address);
+			// PS5 fork: an early SDK's libgcm_sys (GTA IV, BLUS30127, context
+			// flags 0x210) keeps its command buffer in local memory (0xC0001000):
+			// it queues its first commands and waits for the RSX to run them
+			// before it maps any io, and later io maps leave the queue where it
+			// is. A FIFO first read while nothing at all is io-mapped is read
+			// from local memory from then on
+			if (m_in_local_memory && address < m_thread->local_mem_size)
+			{
+				return rsx::constants::local_mem_base + address;
+			}
+
+			const u32 ea = m_iotable->get_addr(address);
+
+			if (ea == umax && address < m_thread->local_mem_size && !m_in_local_memory &&
+				std::all_of(m_iotable->ea.begin(), m_iotable->ea.end(), [](const atomic_t<u32>& e) { return e == umax; }))
+			{
+				m_in_local_memory = true;
+				rsx_log.warning("FIFO: nothing is io-mapped; the command queue (at offset 0x%x) is in local memory", address);
+				return rsx::constants::local_mem_base + address;
+			}
+
+			return ea;
 		}
 
 		void FIFO_control::sync_get() const
@@ -83,7 +75,7 @@ namespace rsx
 			m_command_inc = ((m_cmd & RSX_METHOD_NON_INCREMENT_CMD_MASK) == RSX_METHOD_NON_INCREMENT_CMD) ? 0 : 4;
 			m_remaining_commands = count;
 			m_fifo_pos = position - (count ? 4 : 0);
-			m_args_ptr = m_iotable->get_addr(m_fifo_pos);
+			m_args_ptr = translate_address(m_fifo_pos);
 			m_command_reg = (m_cmd & 0xffff) + m_command_inc * (((m_cmd >> 18) - count) & 0x7ff) - m_command_inc;
 		}
 
@@ -136,17 +128,7 @@ namespace rsx
 
 				m_cache_addr = addr & -128;
 
-				u32 addr1 = m_iotable->get_addr(m_cache_addr);
-
-				// PS5 fork: an early SDK's libgcm_sys (GTA IV, BLUS30127, context
-				// flags 0x210) sets the FIFO's put pointer a moment before it maps
-				// its command buffer (io 0x0 -> ea 0x30000000): a fetch in between
-				// finds nothing mapped and the queue was declared dead. While nothing
-				// at all is io-mapped, wait for the mapping
-				if (addr1 == umax)
-				{
-					addr1 = wait_for_first_iomap(m_iotable, m_cache_addr);
-				}
+				u32 addr1 = translate_address(m_cache_addr);
 
 				if (addr1 == umax)
 				{
@@ -159,7 +141,7 @@ namespace rsx
 				if (0x100000 - (m_cache_addr & 0xfffff) < m_cache_size)
 				{
 					// Check if memory layout changes in the next 1MB page boundary
-					if ((addr1 >> 20) + 1 != (m_iotable->get_addr(m_cache_addr + 0x100000) >> 20))
+					if ((addr1 >> 20) + 1 != (translate_address(m_cache_addr + 0x100000) >> 20))
 					{
 						// Trim cache as needed if memory layout changes
 						m_cache_size = 0x100000 - (m_cache_addr & 0xfffff);
@@ -297,7 +279,7 @@ namespace rsx
 			// Return a raw pointer to contiguous memory
 			constexpr u32 _1M = 0x100000;
 			const u32 size = length_in_words * sizeof(u32);
-			const u32 from = m_iotable->get_addr(m_fifo_pos);
+			const u32 from = translate_address(m_fifo_pos);
 
 			for (u32 remaining = size, addr = m_fifo_pos, ptr = from; remaining > 0;)
 			{
@@ -309,7 +291,7 @@ namespace rsx
 				}
 
 				remaining -= available;
-				const u32 next_ptr = m_iotable->get_addr(next_block);
+				const u32 next_ptr = translate_address(next_block);
 				if (next_ptr != (ptr + available))
 				{
 					return { static_cast<const u32*>(vm::base(from)), (size - remaining) / sizeof(u32)};
@@ -415,7 +397,7 @@ namespace rsx
 			{
 				if (m_fifo_pos == m_memwatch_addr)
 				{
-					if (const u32 addr = m_iotable->get_addr(m_memwatch_addr); addr + 1)
+					if (const u32 addr = translate_address(m_memwatch_addr); addr + 1)
 					{
 						if (vm::read32(addr) == m_memwatch_cmp)
 						{
@@ -441,7 +423,7 @@ namespace rsx
 					return;
 				}
 
-				if (u32 addr = m_iotable->get_addr(m_fifo_pos); addr + 1 || (addr = wait_for_first_iomap(m_iotable, m_fifo_pos)) + 1)
+				if (const u32 addr = translate_address(m_fifo_pos); addr + 1)
 				{
 					m_cmd = vm::read32(addr);
 				}
@@ -530,7 +512,7 @@ namespace rsx
 			inc_get(true); // Wait for data block to become available
 
 			// Validate the args ptr if the command attempts to read from it
-			m_args_ptr = m_iotable->get_addr(m_fifo_pos);
+			m_args_ptr = translate_address(m_fifo_pos);
 			if (m_args_ptr == umax) [[unlikely]]
 			{
 				// Optional recovery
@@ -808,7 +790,7 @@ namespace rsx
 				// Optimize returning to another CALL
 				if ((ctrl->put & ~3) != fifo_ret_addr)
 				{
-					if (u32 addr = iomap_table.get_addr(fifo_ret_addr); addr != umax)
+					if (u32 addr = fifo_ctrl->translate_address(fifo_ret_addr); addr != umax)
 					{
 						const u32 cmd0 = vm::read32(addr);
 
@@ -897,7 +879,7 @@ namespace rsx
 
 								for (u32 i = 1; i < remaining && fifo_ctrl->get_pos() + i * 4 != (ctrl->put & ~3); i++)
 								{
-									replay_cmd.rsx_command = std::make_pair(0, vm::read32(iomap_table.get_addr(fifo_ctrl->get_pos()) + (i * 4)));
+									replay_cmd.rsx_command = std::make_pair(0, vm::read32(fifo_ctrl->translate_address(fifo_ctrl->get_pos()) + (i * 4)));
 
 									commands.push_back(replay_cmd);
 								}
