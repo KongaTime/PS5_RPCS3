@@ -12,6 +12,7 @@ add_library(rpcs3_ps5 STATIC
     ps5_launcher.cpp
     ps5_fdtrack.cpp
     ps5_sound.cpp
+    ../rpcs3qt/emu_settings_type.cpp
     ../Input/pad_thread.cpp
     ../Input/product_info.cpp
     ../Input/ps_move_config.cpp

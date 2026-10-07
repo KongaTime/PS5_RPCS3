@@ -19,8 +19,11 @@
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/Thread.h"
+#include "rpcs3qt/emu_settings_type.h" // which config entry each of the desktop dialog's settings is; no Qt
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cctype>
 #include <cmath>
 
@@ -1073,6 +1076,8 @@ namespace rsx::overlays
 			hints.emplace_back(resource_config::confirm_button_resource(), "Change");
 			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::square), "Use global");
 			hints.emplace_back(resource_config::cancel_button_resource(), "Save and close");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::L1), "");
+			hints.emplace_back(static_cast<u8>(resource_config::standard_image_resource::R1), "Sections");
 		}
 		else if (m_tab == tab::library && m_detail)
 		{
@@ -1585,58 +1590,155 @@ namespace rsx::overlays
 
 	namespace
 	{
-		// The settings a game may want of its own, as the config file names them
-		struct game_setting_spec
+		// Every setting the desktop's settings dialog offers, by its tabs, with
+		// the tooltips it shows there (ps5_settings_table.inc, written from
+		// rpcs3qt by settings_table.py). The Settings tab shows them a tab at a
+		// time, a game's settings all of them
+		struct settings_tab
 		{
-			const char* section;
-			const char* key;
-			const char* label;
-			const char* help;
-			std::vector<std::string> options; // empty: every value the setting has
+			const char* name;
+			const char* icon;
+			const char* note;
 		};
 
-		const std::vector<game_setting_spec>& game_setting_specs()
+		constexpr settings_tab c_settings_tabs[]
 		{
-			static const std::vector<game_setting_spec> specs
+			{"CPU", "home/32/gauge-solid.png", "How the PS3's processors are run."},
+			{"GPU", "home/32/display-solid.png", "How games are drawn."},
+			{"Audio", "home/32/headphones-solid.png", "How games sound."},
+			{"I/O", "home/32/gamepad-solid.png", "Controllers, as games see them."},
+			{"System", "home/32/settings.png", "The PS3 the games see."},
+			{"Network", "home/32/user-group-solid.png", "The PS3's network, as games see it."},
+			{"Advanced", "home/32/sliders-solid.png", "Accuracy and timing, for the games that need them."},
+			{"Emulator", "home/32/maximize-solid.png", "Overlays, notices and compiling."},
+			{"Debug", "home/32/bug-solid.png", "For tracking down a fault. Most of these slow games down."},
+		};
+
+		struct settings_entry
+		{
+			const char* tab;
+			emu_settings_type type;
+			const char* label;
+			const char* help;
+		};
+
+		const settings_entry c_settings_table[]
+		{
+#include "ps5_settings_table.inc"
+		};
+
+		// An entry's section in the config ("Video/Performance Overlay") and name
+		std::pair<std::string, std::string> setting_path(emu_settings_type type)
+		{
+			const cfg_location& location = ::at32(settings_location, type);
+			std::string section;
+			for (usz i = 0; i + 1 < location.size(); i++)
 			{
-				{"", "", "PROCESSOR", "", {}},
-				{"Core", "PPU Decoder", "PPU decoder", "How the code of the PS3's main processor runs. The recompiler is far faster; the interpreter is only for tracking down a fault.", {}},
-				{"Core", "SPU Decoder", "SPU decoder", "How the code of the SPUs runs. LLVM is the fastest; the others are slower fallbacks for a game that breaks with it.", {}},
-				{"Core", "SPU Block Size", "SPU block size", "How much SPU code is compiled at once. Mega and Giga can run faster but compile longer; Safe works with every game.", {}},
-				{"Core", "SPU XFloat Accuracy", "SPU float accuracy", "How exactly the SPUs' floating point is followed. Raise it for broken lighting, physics or animation; lower is faster.", {}},
-				{"Core", "Preferred SPU Threads", "Preferred SPU threads", "How many SPU threads may run at the same time. Auto leaves it to RPCS3; some heavy games run better with 1 or 2.", {"0", "1", "2", "3", "4", "5", "6"}},
-				{"Core", "Max SPURS Threads", "Max SPURS threads", "Caps the threads a game's SPURS task system may use. Lower can help heavy games; too low can stutter.", {"1", "2", "3", "4", "5", "6"}},
-				{"Core", "SPU loop detection", "SPU loop detection", "Lets the processor go when an SPU waits in a loop. Can make a game faster, or break timing in a few.", {}},
-				{"", "", "GRAPHICS", "", {}},
-				{"Video", "Resolution Scale", "Resolution scale", "Draws the game at a multiple of its own resolution. Above 100% is sharper and costs GPU time.", {"50", "75", "100", "125", "150", "200", "250", "300"}},
-				{"Video", "Frame limit", "Frame limit", "Caps the frame rate. Auto follows the game; Off can make a game run too fast.", {}},
-				{"Video", "Shader Mode", "Shader mode", "How new shaders are built. Async builds them on other threads, so a new effect waits a moment instead of the whole game. (The shader interpreter froze the console and is left out.)",
-					{"Async Recompiler (multi-threaded)", "Legacy Recompiler (single-threaded)"}},
-				{"Video", "Resolution", "Resolution", "The output resolution the game is told the PS3 has. Most games want 720p.", {}},
-				{"Video", "Anisotropic Filter Override", "Anisotropic filtering", "Sharpens textures seen at an angle. Auto keeps the game's own setting.", {"0", "2", "4", "8", "16"}},
-				{"Video", "Write Color Buffers", "Write color buffers", "Copies what is drawn back to the PS3's memory. Fixes missing effects in some games, at a cost.", {}},
-				{"Video", "Strict Rendering Mode", "Strict rendering", "Follows the PS3's rendering rules more closely. Fixes some graphical errors and is slower.", {}},
-				{"Video", "Multithreaded RSX", "Multithreaded RSX", "Moves part of the graphics work to a thread of its own. Can help games that are short of processor time.", {}},
-				{"Video", "Relaxed ZCULL Sync", "Relaxed ZCULL sync", "Looser timing for occlusion queries. Faster in games that use many; things may flicker.", {}},
-				{"Video", "Disable ZCull Occlusion Queries", "Skip occlusion queries", "Answers occlusion queries without drawing them. Faster; objects may pop in or vanish.", {}},
-				{"", "", "AUDIO", "", {}},
-				{"Audio", "Master Volume", "Volume", "The game's volume.", {"25", "50", "75", "100", "125", "150", "200"}},
-				{"Audio", "Enable Time Stretching", "Time stretching", "Stretches the sound instead of letting it crackle when the game runs slow.", {}},
-			};
-			return specs;
+				section += (i ? "/" : "") + location[i];
+			}
+			return {section, location.back()};
 		}
 
 		// A setting's values to choose from. RPCS3's on/off settings list none
 		// (cfg::_bool has no to_list), and with only the current value to
-		// cycle through, CROSS changed nothing: Time stretching, the
-		// performance overlay and every other on/off setting stayed as they were
-		std::vector<std::string> setting_options(const cfg::_base& setting)
+		// cycle through, CROSS changed nothing; numbers list only their ends,
+		// so they step between them in round numbers, some 40 stops at most
+		std::vector<std::string> setting_options(const cfg::_base& setting, std::string_view key)
 		{
+			// Fewer than the setting has: what the console cannot run, and
+			// ranges better in a few steps
+			static const std::map<std::string_view, std::vector<std::string>> offered
+			{
+				// The shader interpreter froze the console
+				{"Shader Mode", {"Async Recompiler (multi-threaded)", "Legacy Recompiler (single-threaded)"}},
+				{"Anisotropic Filter Override", {"0", "2", "4", "8", "16"}},
+				{"Resolution Scale", {"50", "75", "100", "125", "150", "200", "250", "300"}},
+				// Adjusted 20 to 40 µs at a time, as RPCS3's tooltip says
+				{"Driver Wake-Up Delay", {"0", "20", "40", "60", "80", "100", "150", "200", "300", "400", "500", "750", "1000", "1500", "2000", "3000", "5000"}},
+				{"Vblank Rate", {"30", "50", "60", "75", "90", "100", "120", "144", "165", "180", "240", "300", "360", "480", "600"}},
+				{"Max LLVM Compile Threads", {"0", "1", "2", "3", "4", "6", "8", "10", "12", "16"}},
+			};
+			if (const auto it = offered.find(key); it != offered.end())
+			{
+				return it->second;
+			}
+
 			if (setting.get_type() == cfg::type::_bool)
 			{
 				return {"false", "true"};
 			}
-			return setting.to_list();
+
+			std::vector<std::string> list = setting.to_list();
+			const cfg::type type = setting.get_type();
+			if ((type != cfg::type::_int && type != cfg::type::uint) || list.size() != 2)
+			{
+				return list;
+			}
+
+			// Integers, or reals (cfg::_float is typed _int, and lists its ends
+			// with decimals), written as the setting writes them
+			const bool real = list[0].find('.') != umax;
+			const auto text = [real](long double number) -> std::string
+			{
+				if (!real)
+				{
+					// Whole multiples of a whole step: exact as they are
+					return number < 0 ? std::to_string(static_cast<s64>(number)) : std::to_string(static_cast<u64>(number));
+				}
+				std::array<char, 32> buffer{};
+				const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), static_cast<f64>(number), std::chars_format::fixed);
+				return error == std::errc() ? std::string(buffer.data(), end) : std::string("0");
+			};
+			const long double low = std::stold(list[0]);
+			const long double high = std::stold(list[1]);
+			if (real)
+			{
+				list = {text(low), text(high)};
+			}
+
+			static constexpr long double steps[] = {0.01L, 0.05L, 0.1L, 0.25L, 0.5L, 1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000,
+				25000, 50000, 100000, 250000, 500000, 1e6L, 1e7L, 1e8L, 1e9L, 1e10L, 1e12L, 1e15L, 1e18L};
+			long double step = steps[std::size(steps) - 1];
+			for (const long double candidate : steps)
+			{
+				if ((real || candidate >= 1) && (high - low) / candidate <= 40)
+				{
+					step = candidate;
+					break;
+				}
+			}
+
+			std::vector<std::pair<long double, std::string>> values{{low, list[0]}, {high, list[1]}};
+			for (long double number = std::ceil(low / step) * step; number < high; number += step)
+			{
+				if (number > low)
+				{
+					values.emplace_back(number, text(number));
+				}
+			}
+			for (const std::string& extra : {setting.def_to_string(), setting.to_string()})
+			{
+				values.emplace_back(std::stold(extra), extra);
+			}
+			std::sort(values.begin(), values.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+
+			std::vector<std::string> result;
+			long double last = 0;
+			for (const auto& [number, written] : values)
+			{
+				if (!result.empty() && number == last)
+				{
+					// The same number written two ways: the setting's own way
+					if (written == setting.to_string() || written == setting.def_to_string())
+					{
+						result.back() = written;
+					}
+					continue;
+				}
+				result.push_back(written);
+				last = number;
+			}
+			return result;
 		}
 
 		// A setting by its section ("Video", or "Video/Performance Overlay") and name
@@ -1677,10 +1779,13 @@ namespace rsx::overlays
 		{
 			if (value == "true") return "On";
 			if (value == "false") return "Off";
-			if (value == "0" && (key == "Preferred SPU Threads" || key == "Anisotropic Filter Override")) return "Auto";
-			if (key == "Resolution Scale" || key == "Master Volume") return value + "%";
+			if (value == "0" && (key == "Preferred SPU Threads" || key == "Anisotropic Filter Override" || key == "Max LLVM Compile Threads" ||
+				key == "Shader Compiler Threads")) return "Auto";
+			if (key == "Resolution Scale" || key == "Master Volume" || key == "Clocks scale" || key == "Time Stretching Threshold") return value + "%";
 			if (key == "Anisotropic Filter Override") return value + "x";
-			if (key == "Desired Audio Buffer Duration") return value + " ms";
+			if (key == "Desired Audio Buffer Duration" || key == "Metrics update interval (ms)") return value + " ms";
+			if (key == "Driver Wake-Up Delay") return value + " µs";
+			if (key == "Vblank Rate") return value + " Hz";
 			if (key == "Opacity (%)") return value + "%";
 			return value;
 		}
@@ -1779,31 +1884,35 @@ namespace rsx::overlays
 		}
 
 		m_gs_rows.clear();
-		for (const game_setting_spec& spec : game_setting_specs())
+		std::string_view tab;
+		for (const settings_entry& entry : c_settings_table)
 		{
-			game_setting row;
-			row.label = spec.label;
-			if (!*spec.section)
+			if (entry.tab != tab)
 			{
-				row.heading = true;
-				m_gs_rows.push_back(std::move(row));
-				continue;
+				tab = entry.tab;
+				game_setting heading;
+				heading.label = entry.tab;
+				heading.heading = true;
+				m_gs_rows.push_back(std::move(heading));
 			}
 
-			cfg::_base* global_setting = find_setting(*global, spec.section, spec.key);
-			cfg::_base* game_setting_entry = find_setting(*game, spec.section, spec.key);
+			const auto [section, key] = setting_path(entry.type);
+			cfg::_base* global_setting = find_setting(*global, section, key);
+			cfg::_base* game_setting_entry = find_setting(*game, section, key);
 			if (!global_setting || !game_setting_entry)
 			{
-				launcher_log.error("Game settings: no setting %s/%s", spec.section, spec.key);
+				launcher_log.error("Game settings: no setting %s/%s", section, key);
 				continue;
 			}
 
-			row.section = spec.section;
-			row.key = spec.key;
-			row.help = spec.help;
+			game_setting row;
+			row.section = section;
+			row.key = key;
+			row.label = *entry.label ? entry.label : key;
+			row.help = entry.help;
 			row.global = global_setting->to_string();
 			row.value = game_setting_entry->to_string();
-			row.options = spec.options.empty() ? setting_options(*global_setting) : spec.options;
+			row.options = setting_options(*global_setting, key);
 			for (const std::string& value : {row.global, row.value})
 			{
 				if (std::find(row.options.begin(), row.options.end(), value) == row.options.end())
@@ -1886,6 +1995,30 @@ namespace rsx::overlays
 		if (button_press == pad_button::circle || button_press == pad_button::triangle)
 		{
 			close_game_settings();
+			return;
+		}
+
+		if (button_press == pad_button::L1 || button_press == pad_button::R1)
+		{
+			// The first setting of the section before or after this one
+			const s32 count = static_cast<s32>(m_gs_rows.size());
+			s32 heading = m_gs_selected;
+			while (heading > 0 && !m_gs_rows[heading].heading) heading--;
+			s32 next = heading;
+			if (button_press == pad_button::L1)
+			{
+				do next--; while (next > 0 && !m_gs_rows[next].heading);
+			}
+			else
+			{
+				do next++; while (next < count && !m_gs_rows[next].heading);
+			}
+			if (next >= 0 && next + 1 < count && m_gs_rows[next].heading)
+			{
+				m_gs_selected = next + 1;
+				play_sound(sound_effect::cursor);
+				layout_game_settings();
+			}
 			return;
 		}
 
@@ -2077,12 +2210,12 @@ namespace rsx::overlays
 			place(*name, static_cast<s16>(panel_x + 24), list_top + 34.f);
 			add(std::move(name));
 
-			auto help = make_label("", 12, f_regular, c_text_dim);
+			auto help = make_label("", 11, f_regular, c_text_dim);
 			help->set_wrap_text(true);
-			help->set_text(row.help);
+			help->set_text(row.help.empty() ? "RPCS3 has no description of this setting." : row.help);
 			help->set_pos(static_cast<s16>(panel_x + 24), static_cast<s16>(list_top + 54));
-			help->set_size(panel_w - 48, 120);
-			help->auto_resize(false, panel_w - 48, 120);
+			help->set_size(panel_w - 48, 300);
+			help->auto_resize(false, panel_w - 48, 300);
 			const s16 help_bottom = static_cast<s16>(help->y + help->h);
 			add(std::move(help));
 
@@ -2114,65 +2247,6 @@ namespace rsx::overlays
 	{
 		// The Settings tab: the global config's settings a player reaches for,
 		// by category
-		struct settings_category
-		{
-			const char* name;
-			const char* icon;
-			const char* note;
-			std::vector<game_setting_spec> rows;
-		};
-
-		const std::vector<settings_category>& settings_categories()
-		{
-			static const std::vector<settings_category> categories = []
-			{
-				std::vector<settings_category> result;
-				const auto& game = game_setting_specs();
-				const auto pick = [&](std::string_view first, std::string_view last)
-				{
-					std::vector<game_setting_spec> rows;
-					bool in = false;
-					for (const game_setting_spec& spec : game)
-					{
-						if (spec.key == first) in = true;
-						if (in && *spec.section) rows.push_back(spec);
-						if (spec.key == last) break;
-					}
-					return rows;
-				};
-
-				result.push_back({"Processor", "home/32/gauge-solid.png", "How the PS3's processors are run.", pick("PPU Decoder", "SPU loop detection")});
-
-				std::vector<game_setting_spec> graphics = pick("Resolution Scale", "Disable ZCull Occlusion Queries");
-				graphics.push_back({"Video", "Stretch To Display Area", "Stretch to the screen", "Fills the whole screen instead of keeping the game's shape. Wide games are not affected; 4:3 games look stretched.", {}});
-				result.push_back({"Graphics", "home/32/display-solid.png", "How games are drawn.", std::move(graphics)});
-
-				std::vector<game_setting_spec> audio = pick("Master Volume", "Enable Time Stretching");
-				audio.push_back({"Audio", "Enable Buffering", "Audio buffering", "Keeps some sound in hand, so short hitches do not break it up. Off lowers the delay a little.", {}});
-				audio.push_back({"Audio", "Desired Audio Buffer Duration", "Buffer length", "How much sound is kept in hand. Longer is steadier, shorter answers sooner.", {"20", "34", "50", "75", "100"}});
-				result.push_back({"Audio", "home/32/headphones-solid.png", "How games sound.", std::move(audio)});
-
-				result.push_back({"Overlays", "home/32/sliders-solid.png", "What is drawn over the game.",
-				{
-					{"Video/Performance Overlay", "Enabled", "Performance overlay", "Shows the frame rate and the load on the processors over the game.", {}},
-					{"Video/Performance Overlay", "Detail level", "Overlay detail", "How much the performance overlay shows: from the frame rate alone to every thread's load.", {}},
-					{"Video/Performance Overlay", "Position", "Overlay position", "The corner of the screen the performance overlay sits in.", {}},
-					{"Video/Performance Overlay", "Opacity (%)", "Overlay opacity", "How solid the performance overlay's background is.", {"25", "50", "70", "85", "100"}},
-					{"Miscellaneous", "Show trophy popups", "Trophy pop-ups", "Shows a pop-up when a trophy is earned.", {}},
-					{"Miscellaneous", "Show PPU compilation hint", "Code compiling notice", "Shows a notice while a game's code is being compiled, the first time it starts.", {}},
-					{"Miscellaneous", "Show shader compilation hint", "Shader compiling notice", "Shows a notice while new shaders are being built.", {}},
-				}});
-
-				result.push_back({"System", "home/32/gamepad-solid.png", "The PS3 the games see.",
-				{
-					{"System", "Language", "Language", "The language the PS3 tells games it is set to. Many games follow it for their text and voices.", {}},
-					{"System", "Enter button assignment", "Confirm button", "Which button confirms in the PS3's own dialogs and in this launcher: cross or circle.", {}},
-				}});
-				return result;
-			}();
-			return categories;
-		}
-
 		// A setting's default as this title has it: the shader interpreter, the
 		// emulator's own default, froze the console and is not offered
 		std::string usable_default(const cfg::_base& setting, const std::vector<std::string>& options)
@@ -2203,21 +2277,26 @@ namespace rsx::overlays
 			return;
 		}
 
-		const settings_category& category = settings_categories()[m_set_category];
-		for (const game_setting_spec& spec : category.rows)
+		const std::string_view tab = c_settings_tabs[m_set_category].name;
+		for (const settings_entry& entry : c_settings_table)
 		{
-			cfg::_base* setting = find_setting(*m_set_cfg, spec.section, spec.key);
+			if (entry.tab != tab)
+			{
+				continue;
+			}
+			const auto [section, key] = setting_path(entry.type);
+			cfg::_base* setting = find_setting(*m_set_cfg, section, key);
 			if (!setting)
 			{
-				launcher_log.error("Settings: no setting %s/%s", spec.section, spec.key);
+				launcher_log.error("Settings: no setting %s/%s", section, key);
 				continue;
 			}
 			game_setting row;
-			row.section = spec.section;
-			row.key = spec.key;
-			row.label = spec.label;
-			row.help = spec.help;
-			row.options = spec.options.empty() ? setting_options(*setting) : spec.options;
+			row.section = section;
+			row.key = key;
+			row.label = *entry.label ? entry.label : key;
+			row.help = entry.help;
+			row.options = setting_options(*setting, key);
 			row.value = setting->to_string();
 			if (std::find(row.options.begin(), row.options.end(), row.value) == row.options.end())
 			{
@@ -2248,7 +2327,7 @@ namespace rsx::overlays
 		const bool down = button_press == pad_button::dpad_down || button_press == pad_button::ls_down;
 		const bool left = button_press == pad_button::dpad_left || button_press == pad_button::ls_left;
 		const bool right = button_press == pad_button::dpad_right || button_press == pad_button::ls_right;
-		const s32 categories = static_cast<s32>(settings_categories().size());
+		const s32 categories = static_cast<s32>(std::size(c_settings_tabs));
 
 		if (!m_set_focus_list)
 		{
@@ -2471,18 +2550,18 @@ namespace rsx::overlays
 		constexpr u16 height = 552;
 		card(40, top, 250, height);
 		text(spaced("SETTINGS"), 9, f_semibold, c_accent, 66, top + 38.f);
-		const auto& categories = settings_categories();
-		for (usz c = 0; c < categories.size(); c++)
+		const auto& categories = c_settings_tabs;
+		for (usz c = 0; c < std::size(categories); c++)
 		{
 			const bool selected = static_cast<s32>(c) == m_set_category;
 			const bool lit = selected && !m_set_focus_list;
-			const f32 y = top + 64.f + c * 56.f;
+			const f32 y = top + 58.f + c * 44.f; // nine, as the desktop dialog has them
 			if (selected)
 			{
 				rounded_rect pill;
 				pill.set_pos(54, static_cast<s16>(y));
-				pill.set_size(222, 46);
-				pill.border_radius = 23;
+				pill.set_size(222, 40);
+				pill.border_radius = 20;
 				pill.back_color = lit ? c_accent : color4f(1.f, 1.f, 1.f, 0.12f);
 				result.add(pill.get_compiled());
 			}
@@ -2500,12 +2579,12 @@ namespace rsx::overlays
 				image_view icon;
 				icon.set_raw_image(it->second.get());
 				icon.set_size(18, 18);
-				icon.set_pos(72, static_cast<s16>(y + 14));
+				icon.set_pos(72, static_cast<s16>(y + 11));
 				icon.back_color.a = 0.f;
 				icon.fore_color = lit ? c_button_text : (selected ? c_text : c_text_dim);
 				result.add(icon.get_compiled());
 			}
-			text(categories[c].name, 14, selected ? f_bold : f_medium, lit ? c_button_text : (selected ? c_text : c_text_dim), 102, y + 23.f);
+			text(categories[c].name, 14, selected ? f_bold : f_medium, lit ? c_button_text : (selected ? c_text : c_text_dim), 102, y + 20.f);
 		}
 		{
 			label note;
@@ -2522,7 +2601,7 @@ namespace rsx::overlays
 		}
 
 		// The category's settings, in the middle
-		const settings_category& category = categories[m_set_category];
+		const settings_tab& category = categories[m_set_category];
 		constexpr s16 list_x = 310;
 		constexpr u16 list_w = 600;
 		card(list_x, top, list_w, height);
@@ -2567,12 +2646,17 @@ namespace rsx::overlays
 				dot.back_color = selected ? c_button_text : c_accent;
 				result.add(dot.get_compiled());
 			}
-			text(row.label, 13, selected ? f_bold : f_medium, ink, list_x + 46, mid);
-
-			auto value = make_label(setting_text(row.key, row.value), 13, f_semibold, selected ? c_button_text : (changed ? c_accent : c_text_dim));
+			auto value = make_label("", 13, f_semibold, selected ? c_button_text : (changed ? c_accent : c_text_dim));
+			fit_text(*value, setting_text(row.key, row.value), 240);
 			const s16 right = static_cast<s16>(list_x + list_w - (selected ? 52 : 34));
 			place(*value, static_cast<s16>(right - value->w), mid);
 			result.add(value->get_compiled());
+
+			// The name, in what the value leaves
+			auto name = make_label("", 13, selected ? f_bold : f_medium, ink);
+			fit_text(*name, row.label, static_cast<u16>(std::max(80, value->x - (selected ? 24 : 16) - (list_x + 46))));
+			place(*name, list_x + 46, mid);
+			result.add(name->get_compiled());
 			if (selected)
 			{
 				text("‹", 16, f_bold, c_button_text, static_cast<s16>(value->x - 18), mid);
@@ -2615,15 +2699,16 @@ namespace rsx::overlays
 				result.add(name.get_compiled());
 
 				label help;
-				help.set_font(12, f_regular);
+				// RPCS3's own tooltip: some run to a dozen lines
+				help.set_font(11, f_regular);
 				help.fore_color = c_text_dim;
 				help.back_color.a = 0.f;
 				help.set_padding(0);
 				help.set_wrap_text(true);
-				help.set_text(row.help);
+				help.set_text(row.help.empty() ? "RPCS3 has no description of this setting." : row.help);
 				help.set_pos(info_x + 26, static_cast<s16>(name.y + name.h + 14));
-				help.set_size(info_w - 52, 200);
-				help.auto_resize(false, info_w - 52, 200);
+				help.set_size(info_w - 52, 320);
+				help.auto_resize(false, info_w - 52, 320);
 				result.add(help.get_compiled());
 
 				const f32 y = help.y + help.h + 30.f;
