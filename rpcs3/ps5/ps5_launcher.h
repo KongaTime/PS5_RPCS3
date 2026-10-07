@@ -36,6 +36,22 @@ namespace rsx::overlays
 		{
 			return cover_file ? static_cast<const image_info_base*>(cover_file.get()) : cover_drawn.get();
 		}
+
+		// The part of the player's cover that is not transparent (u0, u1, v0,
+		// v1): a cover with clear margins still fills the case's front
+		f32 cover_crop[4]{0.f, 1.f, 0.f, 1.f};
+
+		// The case's back: the player's own (<serial>-back.png or .jpg), else
+		// one drawn from the game's icon and art
+		std::unique_ptr<image_info> back_file;
+		std::vector<u8> back_pixels;
+		std::unique_ptr<memory_image_info> back_drawn;
+		f32 back_crop[4]{0.f, 1.f, 0.f, 1.f};
+
+		const image_info_base* back() const
+		{
+			return back_file ? static_cast<const image_info_base*>(back_file.get()) : back_drawn.get();
+		}
 	};
 
 	struct ps5_launcher_dialog : public user_interface
@@ -217,6 +233,12 @@ namespace rsx::overlays
 		f32 m_cover_pitch = 0.f;
 		f32 m_sway_time = 0.f;
 		bool m_detail = false;
+		bool m_flipped = false;    // the selected case shows its back
+		f32 m_flip_angle = 0.f;    // eases to pi when flipped
+		std::vector<u8> m_sheen_pixels;
+		std::unique_ptr<memory_image_info> m_sheen_image;
+		std::unique_ptr<image_info> m_flip_icon_data;
+		std::unique_ptr<image_info> m_back_icon_data;
 		f32 m_detail_t = 0.f;
 		s32 m_detail_option = 0;
 		std::vector<u8> m_glow_pixels;

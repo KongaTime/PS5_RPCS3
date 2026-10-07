@@ -400,22 +400,140 @@ namespace rsx::overlays
 			game.cover_drawn->dirty = true;
 		}
 
-		// The player's own cover if there is one, else one drawn
+		// Draws `image` into an RGBA canvas at (x, y, w, h), scaled to fill the
+		// box and cropped evenly (or, with `fit`, scaled to fit inside it)
+		void paint(std::vector<u8>& canvas, u16 canvas_w, const image_info_base& image, int x, int y, int w, int h, bool fit)
+		{
+			const f32 box = static_cast<f32>(w) / h;
+			const f32 art = static_cast<f32>(image.w) / image.h;
+			f32 su0 = 0.f, su1 = 1.f, sv0 = 0.f, sv1 = 1.f;
+			if (fit)
+			{
+				if (art > box) { const int nh = static_cast<int>(w / art); y += (h - nh) / 2; h = nh; }
+				else { const int nw = static_cast<int>(h * art); x += (w - nw) / 2; w = nw; }
+			}
+			else if (art > box) { const f32 keep = box / art; su0 = 0.5f - keep / 2; su1 = 0.5f + keep / 2; }
+			else { const f32 keep = art / box; sv0 = 0.5f - keep / 2; sv1 = 0.5f + keep / 2; }
+
+			f32 rgba[4];
+			for (int py = 0; py < h; py++)
+			{
+				for (int px = 0; px < w; px++)
+				{
+					sample(image, su0 + (su1 - su0) * (px + 0.5f) / w, sv0 + (sv1 - sv0) * (py + 0.5f) / h, rgba);
+					u8* out = &canvas[(static_cast<usz>(y + py) * canvas_w + x + px) * 4];
+					const f32 a = rgba[3] / 255.f;
+					for (int c = 0; c < 3; c++)
+					{
+						out[c] = static_cast<u8>(std::clamp(rgba[c] * a + out[c] * (1.f - a), 0.f, 255.f));
+					}
+				}
+			}
+		}
+
+		// A back drawn for the case: the game's icon at the top, its PIC1 below
+		// as a screenshot would be, over a deep blue, with a cyan rule and a
+		// dark foot like a real back's ratings band
+		void draw_back(ps5_launcher_game& game)
+		{
+			std::vector<u8>& px = game.back_pixels;
+			px.assign(usz{c_cover_w} * c_cover_h * 4, 0);
+			for (u16 y = 0; y < c_cover_h; y++)
+			{
+				for (u16 x = 0; x < c_cover_w; x++)
+				{
+					u8* out = &px[(usz{y} * c_cover_w + x) * 4];
+					const f32 t = static_cast<f32>(y) / c_cover_h;
+					const bool foot = y >= c_cover_h - 44;
+					out[0] = foot ? 8 : static_cast<u8>(10 + 8 * (1 - t));
+					out[1] = foot ? 10 : static_cast<u8>(16 + 14 * (1 - t));
+					out[2] = foot ? 22 : static_cast<u8>(60 + 40 * (1 - t));
+					out[3] = 255;
+					if (y >= c_cover_h - 47 && y < c_cover_h - 44 && x >= 20 && x < c_cover_w - 20)
+					{
+						out[0] = 102, out[1] = 222, out[2] = 242;
+					}
+				}
+			}
+
+			if (game.icon && game.icon->get_data())
+			{
+				paint(px, c_cover_w, *game.icon, 30, 28, c_cover_w - 60, 150, true);
+			}
+			if (game.background && game.background->get_data())
+			{
+				paint(px, c_cover_w, *game.background, 30, 196, c_cover_w - 60, 156, false);
+			}
+
+			game.back_drawn = std::make_unique<memory_image_info>(c_cover_w, c_cover_h, u8{4}, px.data());
+			game.back_drawn->dirty = true;
+		}
+
+		// Where an image is not transparent, as (u0, u1, v0, v1)
+		void opaque_bounds(const image_info_base& image, f32 crop[4])
+		{
+			const u8* data = image.get_data();
+			int x0 = image.w, x1 = -1, y0 = image.h, y1 = -1;
+			for (int y = 0; y < image.h; y++)
+			{
+				for (int x = 0; x < image.w; x++)
+				{
+					if (data[(y * image.w + x) * 4 + 3] > 24)
+					{
+						x0 = std::min(x0, x); x1 = std::max(x1, x);
+						y0 = std::min(y0, y); y1 = std::max(y1, y);
+					}
+				}
+			}
+			if (x1 < x0 || y1 < y0)
+			{
+				return;
+			}
+			crop[0] = static_cast<f32>(x0) / image.w;
+			crop[1] = static_cast<f32>(x1 + 1) / image.w;
+			crop[2] = static_cast<f32>(y0) / image.h;
+			crop[3] = static_cast<f32>(y1 + 1) / image.h;
+		}
+
+		std::unique_ptr<image_info> load_any(const std::string& base)
+		{
+			for (const char* extension : {".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"})
+			{
+				if (auto image = load_image(base + extension))
+				{
+					return image;
+				}
+			}
+			return nullptr;
+		}
+
+		// The player's own cover and back if there are, else ones drawn
 		void load_cover(ps5_launcher_game& game)
 		{
 			if (!game.info.serial.empty())
 			{
 				const std::string base = fs::get_config_dir(true) + "covers/" + game.info.serial;
-				for (const char* extension : {".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG"})
+				if ((game.cover_file = load_any(base)))
 				{
-					if (auto image = load_image(base + extension))
+					opaque_bounds(*game.cover_file, game.cover_crop);
+				}
+				for (const char* suffix : {"-back", "_back", " back"})
+				{
+					if ((game.back_file = load_any(base + suffix)))
 					{
-						game.cover_file = std::move(image);
-						return;
+						opaque_bounds(*game.back_file, game.back_crop);
+						break;
 					}
 				}
 			}
-			draw_cover(game);
+			if (!game.cover_file)
+			{
+				draw_cover(game);
+			}
+			if (!game.back_file)
+			{
+				draw_back(game);
+			}
 		}
 
 		// The region a serial's third letter names
@@ -565,6 +683,33 @@ namespace rsx::overlays
 			}
 			m_glow_image = std::make_unique<memory_image_info>(n, n, u8{4}, m_glow_pixels.data());
 			m_glow_image->dirty = true;
+		}
+		// The cases' sheen: a soft diagonal band of light, slid across the front
+		// as the case turns
+		{
+			constexpr u16 n = 128;
+			m_sheen_pixels.resize(usz{n} * n * 4);
+			for (u16 yy = 0; yy < n; yy++)
+			{
+				for (u16 xx = 0; xx < n; xx++)
+				{
+					const f32 d = (xx + 0.45f * yy) / n - 0.72f;
+					const f32 a = std::exp(-d * d / 0.006f) * 0.9f + std::exp(-d * d / 0.05f) * 0.25f;
+					u8* px = &m_sheen_pixels[(usz{yy} * n + xx) * 4];
+					px[0] = px[1] = px[2] = 255;
+					px[3] = static_cast<u8>(std::clamp(a, 0.f, 1.f) * 255.f);
+				}
+			}
+			m_sheen_image = std::make_unique<memory_image_info>(n, n, u8{4}, m_sheen_pixels.data());
+			m_sheen_image->dirty = true;
+		}
+		for (auto [data, path] : {std::pair{&m_flip_icon_data, "home/32/rotate-left-solid.png"}, std::pair{&m_back_icon_data, "home/32/circle-left-solid.png"}})
+		{
+			*data = resource_config::load_icon(path);
+			if (*data)
+			{
+				(*data)->dirty = true;
+			}
 		}
 		m_library_art.set_size(virtual_width, virtual_height);
 		m_library_art.back_color.a = 0.f;
@@ -1221,6 +1366,8 @@ namespace rsx::overlays
 		}
 
 		m_selected = index;
+		m_flipped = false;
+		m_flip_angle = 0.f;
 		play_sound(sound_effect::cursor);
 		layout_home();
 	}
@@ -1805,7 +1952,7 @@ namespace rsx::overlays
 		constexpr f32 c_row_mid_y = 330.f;
 		constexpr f32 c_case_w = 290.f;
 		constexpr f32 c_case_aspect = 1.156f;
-		constexpr f32 c_case_depth = 0.1f;
+		constexpr f32 c_case_depth = 0.075f;
 		constexpr f32 c_deg = 3.14159265f / 180.f;
 
 		struct vec3
@@ -1856,11 +2003,18 @@ namespace rsx::overlays
 		}
 
 		// One face of a case: a corner and two edges, in the case's own space
+		enum class face_kind : u8
+		{
+			plastic,
+			front,
+			back,
+			spine,
+		};
+
 		struct case_face
 		{
 			vec3 origin, edge_a, edge_b, normal;
-			bool textured;
-			f32 u0, u1, v0, v1;
+			face_kind kind;
 		};
 
 		std::vector<case_face> case_faces()
@@ -1869,14 +2023,15 @@ namespace rsx::overlays
 			return
 			{
 				// Front: the cover
-				{{-w / 2, -h / 2, -d / 2}, {w, 0, 0}, {0, h, 0}, {0, 0, -1}, true, 0.f, 1.f, 0.f, 1.f},
+				{{-w / 2, -h / 2, -d / 2}, {w, 0, 0}, {0, h, 0}, {0, 0, -1}, face_kind::front},
+				// Back: seen from behind, its left is the case's right
+				{{w / 2, -h / 2, d / 2}, {-w, 0, 0}, {0, h, 0}, {0, 0, 1}, face_kind::back},
 				// Spine (left): the cover's edge wraps round it
-				{{-w / 2, -h / 2, d / 2}, {0, 0, -d}, {0, h, 0}, {-1, 0, 0}, true, 0.f, 0.035f, 0.f, 1.f},
-				// The opening edge, top, bottom and back: the case's plastic
-				{{w / 2, -h / 2, -d / 2}, {0, 0, d}, {0, h, 0}, {1, 0, 0}, false, 0, 0, 0, 0},
-				{{-w / 2, -h / 2, d / 2}, {w, 0, 0}, {0, 0, -d}, {0, -1, 0}, false, 0, 0, 0, 0},
-				{{-w / 2, h / 2, -d / 2}, {w, 0, 0}, {0, 0, d}, {0, 1, 0}, false, 0, 0, 0, 0},
-				{{w / 2, -h / 2, d / 2}, {-w, 0, 0}, {0, h, 0}, {0, 0, 1}, false, 0, 0, 0, 0},
+				{{-w / 2, -h / 2, d / 2}, {0, 0, -d}, {0, h, 0}, {-1, 0, 0}, face_kind::spine},
+				// The opening edge, top and bottom: clear plastic
+				{{w / 2, -h / 2, -d / 2}, {0, 0, d}, {0, h, 0}, {1, 0, 0}, face_kind::plastic},
+				{{-w / 2, -h / 2, d / 2}, {w, 0, 0}, {0, 0, -d}, {0, -1, 0}, face_kind::plastic},
+				{{-w / 2, h / 2, -d / 2}, {w, 0, 0}, {0, 0, d}, {0, 1, 0}, face_kind::plastic},
 			};
 		}
 
@@ -1906,7 +2061,7 @@ namespace rsx::overlays
 				break;
 			case pad_button::dpad_down:
 			case pad_button::ls_down:
-				if (m_detail_option < 3)
+				if (m_detail_option < 4)
 				{
 					m_detail_option++;
 					play_sound(sound_effect::cursor);
@@ -1917,9 +2072,14 @@ namespace rsx::overlays
 				{
 				case 0: boot_selected(); break;
 				case 1: open_game_settings(); break;
-				case 2: ask_delete(); break;
+				case 2: m_flipped = !m_flipped; play_sound(sound_effect::cursor); break;
+				case 3: ask_delete(); break;
 				default: m_detail = false; play_sound(sound_effect::cancel); layout_hints(); break;
 				}
+				break;
+			case pad_button::R3:
+				m_flipped = !m_flipped;
+				play_sound(sound_effect::cursor);
 				break;
 			case pad_button::circle:
 				m_detail = false;
@@ -1963,6 +2123,11 @@ namespace rsx::overlays
 			break;
 		case pad_button::circle:
 			set_tab(tab::home);
+			break;
+		case pad_button::R3:
+			// Turn the case round to its back, and back again
+			m_flipped = !m_flipped;
+			play_sound(sound_effect::cursor);
 			break;
 		default:
 			break;
@@ -2027,6 +2192,7 @@ namespace rsx::overlays
 
 			if (index == m_selected)
 			{
+				pose.yaw += m_flip_angle;
 				pose.at = pose.at + vec3{-330.f, 6.f, -170.f} * detail;
 			}
 			else
@@ -2039,14 +2205,13 @@ namespace rsx::overlays
 		};
 
 		const std::vector<case_face> faces = case_faces();
-		constexpr color4f plastic{0.07f, 0.08f, 0.12f, 1.f};
 
 		// A face as one triangle strip over a grid (rows joined by repeated
 		// vertices), fine enough that the texture follows the perspective
-		const auto add_face = [&](const image_info_base* image, const case_pose& pose, const case_face& face, int cols, int rows, f32 b0, f32 b1, const color4f& color)
+		const auto add_face = [&](const image_info_base* image, const f32 uv[4], const case_pose& pose, const case_face& face, int cols, int rows, f32 b0, f32 b1, const color4f& color)
 		{
 			compiled_resource::command cmd;
-			if (face.textured && image)
+			if (image)
 			{
 				cmd.config.set_image_resource(image_resource_id::raw_image);
 				cmd.config.external_data_ref = image;
@@ -2061,7 +2226,7 @@ namespace rsx::overlays
 				f32 x, y;
 				project(to_world(pose, local), x, y);
 				vertex v;
-				v.vec4(x, y, face.u0 + (face.u1 - face.u0) * a, face.v0 + (face.v1 - face.v0) * b);
+				v.vec4(x, y, uv[0] + (uv[1] - uv[0]) * a, uv[2] + (uv[3] - uv[2]) * b);
 				return v;
 			};
 
@@ -2121,7 +2286,7 @@ namespace rsx::overlays
 
 		for (const s32 i : order)
 		{
-			const image_info_base* cover = m_games[i].cover();
+			const ps5_launcher_game& game = m_games[i];
 			case_pose pose = pose_of(i);
 			if (pose.alpha <= 0.f)
 			{
@@ -2129,6 +2294,29 @@ namespace rsx::overlays
 			}
 			const bool near_middle = std::abs(i - m_flow_pos) < 1.5f;
 			const int cols = near_middle ? 14 : 8;
+
+			// What each face shows, and from which part of its image
+			const f32 spine_uv[4] = {game.cover_crop[0], game.cover_crop[0] + 0.03f * (game.cover_crop[1] - game.cover_crop[0]), game.cover_crop[2], game.cover_crop[3]};
+			const auto image_of = [&](const case_face& face, const f32*& uv) -> const image_info_base*
+			{
+				switch (face.kind)
+				{
+				case face_kind::front: uv = game.cover_crop; return game.cover();
+				case face_kind::back: uv = game.back_crop; return game.back();
+				case face_kind::spine: uv = spine_uv; return game.cover();
+				default: uv = spine_uv; return nullptr;
+				}
+			};
+			const auto colour_of = [&](const case_face& face, f32 shade, f32 alpha) -> color4f
+			{
+				if (face.kind == face_kind::plastic)
+				{
+					// Clear plastic: pale and see-through, brighter in the light
+					return color4f(0.55f + 0.4f * shade, 0.62f + 0.36f * shade, 0.8f + 0.2f * shade, 0.55f * alpha);
+				}
+				const f32 s = face.kind == face_kind::spine ? shade * 0.8f : shade;
+				return color4f(s, s, s, alpha);
+			};
 
 			// Its reflection: the faces toward us, mirrored in the floor and
 			// fading downward in bands (only the case's foot shows)
@@ -2140,34 +2328,43 @@ namespace rsx::overlays
 				{
 					continue;
 				}
+				const f32* uv = nullptr;
+				const image_info_base* image = image_of(face, uv);
 				const f32 shade = lit(pose, face);
 				constexpr int bands = 5;
 				for (int b = 0; b < bands; b++)
 				{
 					const f32 f0 = 1.f - 0.32f * b / bands;
 					const f32 f1 = 1.f - 0.32f * (b + 1) / bands;
-					const f32 fade = 0.22f * (1.f - (b + 0.5f) / bands) * pose.alpha;
-					const color4f base = face.textured ? color4f(shade, shade, shade, fade) : color4f(plastic.r * shade, plastic.g * shade, plastic.b * shade, fade);
-					add_face(cover, mirror, face, cols, 1, f1, f0, base);
+					const f32 fade = 0.24f * (1.f - (b + 0.5f) / bands);
+					add_face(image, uv, mirror, face, face.kind == face_kind::front || face.kind == face_kind::back ? cols : 1, 1, f1, f0, colour_of(face, shade, fade * pose.alpha));
 				}
 			}
 
-			// The case
-			for (const case_face& face : faces)
+			// The case: its back faces first, so the clear edges show what is
+			// behind them
+			for (int pass = 0; pass < 2; pass++)
 			{
-				if (!facing(pose, face))
+				for (const case_face& face : faces)
 				{
-					continue;
-				}
-				const f32 shade = lit(pose, face);
-				if (face.textured)
-				{
-					const f32 s = face.normal.x != 0.f ? shade * 0.75f : shade;
-					add_face(cover, pose, face, face.normal.x != 0.f ? 1 : cols, face.normal.x != 0.f ? 6 : cols, 0.f, 1.f, color4f(s, s, s, pose.alpha));
-				}
-				else
-				{
-					add_face(cover, pose, face, 1, 1, 0.f, 1.f, color4f(plastic.r * shade * 2.f, plastic.g * shade * 2.f, plastic.b * shade * 2.f, pose.alpha));
+					if (!facing(pose, face) || (face.kind == face_kind::plastic) != (pass == 1))
+					{
+						continue;
+					}
+					const f32* uv = nullptr;
+					const image_info_base* image = image_of(face, uv);
+					const f32 shade = lit(pose, face);
+					const bool big = face.kind == face_kind::front || face.kind == face_kind::back;
+					add_face(image, uv, pose, face, big ? cols : 1, big ? cols : 6, 0.f, 1.f, colour_of(face, shade, pose.alpha));
+
+					// The sheen: a band of light across the cover, sliding as the
+					// case turns
+					if (big && m_sheen_image)
+					{
+						const f32 slide = std::clamp(-pose.yaw * 0.55f + pose.pitch * 0.3f, -0.6f, 0.6f) + (face.kind == face_kind::back ? 0.25f : 0.f);
+						const f32 sheen_uv[4] = {slide, slide + 1.f, 0.f, 1.f};
+						add_face(m_sheen_image.get(), sheen_uv, pose, face, cols, cols, 0.f, 1.f, color4f(1.f, 1.f, 1.f, (near_middle ? 0.22f : 0.12f) * pose.alpha));
+					}
 				}
 			}
 		}
@@ -2239,93 +2436,146 @@ namespace rsx::overlays
 				add_animated(result, caption, 1.f - detail, 0.f, 20.f * detail);
 			}
 
-			// The game's own menu, on the right
+			// The game's own menu, on the right: a card of glass with the game's
+			// name over its options, each a pill with its icon; the chosen one
+			// lit in cyan
 			if (detail > 0.f)
 			{
 				compiled_resource menu;
-				constexpr s16 left = 690;
-				constexpr u16 width = 500;
+				constexpr s16 card_x = 676;
+				constexpr s16 card_y = 112;
+				constexpr u16 card_w = 540;
+				constexpr s16 left = card_x + 40;
+				constexpr u16 inner = card_w - 80;
 
-				auto kicker = make_label(spaced(fmt::format("%s%s", region_of(info.serial).empty() ? "PS3" : region_of(info.serial), info.category == "HG" ? "  DIGITAL" : info.category == "DG" ? "  DISC" : "")), 10, f_semibold, c_text_dim);
-				place(*kicker, left, 150.f);
-				menu.add(kicker->get_compiled());
+				// The card, its cyan edge light along the top, and a glow behind it
+				glow(card_x + card_w / 2, card_y + 250, 900, 700, color4f(c_accent.r, c_accent.g, c_accent.b, 0.08f));
+				rounded_rect card;
+				card.set_pos(card_x, card_y);
+				card.border_radius = 28;
+				card.back_color = color4f(0.02f, 0.04f, 0.16f, 0.78f);
+				rounded_rect edge;
+				edge.set_pos(card_x + 28, card_y);
+				edge.set_size(card_w - 56, 3);
+				edge.border_radius = 2;
+				edge.back_color = c_accent;
+
+				auto kicker = make_label(spaced(fmt::format("%s%s", region_of(info.serial).empty() ? "PS3" : region_of(info.serial), info.category == "HG" ? "  DIGITAL" : info.category == "DG" ? "  DISC" : "")), 9, f_semibold, c_accent);
+				place(*kicker, left, card_y + 44.f);
 
 				label title;
-				title.set_font(30, f_bold);
+				title.set_font(28, f_bold);
 				title.fore_color = c_text;
 				title.back_color.a = 0.f;
 				title.set_padding(0);
 				title.set_wrap_text(true);
 				title.set_text(name_text);
-				title.set_pos(left - 1, 166);
-				title.set_size(width, 110);
-				title.auto_resize(false, width, 110);
-				menu.add(title.get_compiled());
+				title.set_pos(left - 1, card_y + 58);
+				title.set_size(inner, 100);
+				title.auto_resize(false, inner, 100);
 
-				f32 y = title.y + title.h + 22.f;
+				f32 y = title.y + title.h + 18.f;
+				std::vector<std::unique_ptr<overlay_element>> chips;
 				{
-					std::vector<std::string> chips;
-					if (!info.serial.empty()) chips.push_back(info.serial);
-					if (!info.app_ver.empty() && info.app_ver != "Unknown") chips.push_back("Version " + info.app_ver);
-					if (own_settings) chips.push_back("Own settings");
+					std::vector<std::string> texts;
+					if (!info.serial.empty()) texts.push_back(info.serial);
+					if (!info.app_ver.empty() && info.app_ver != "Unknown") texts.push_back("Version " + info.app_ver);
+					if (own_settings) texts.push_back("Own settings");
 					f32 x = left;
-					for (const std::string& text : chips)
+					for (const std::string& text : texts)
 					{
 						const bool accent = text == "Own settings";
-						auto chip_label = make_label(text, 10, f_medium, accent ? c_accent : c_text);
-						rounded_rect chip;
-						chip.set_pos(static_cast<s16>(x), static_cast<s16>(y));
-						chip.set_size(static_cast<u16>(chip_label->w + 28), 24);
-						chip.border_radius = 12;
-						chip.back_color = accent ? color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f) : color4f(1.f, 1.f, 1.f, 0.1f);
-						menu.add(chip.get_compiled());
-						place(*chip_label, static_cast<s16>(x + 14), y + 12.f);
-						menu.add(chip_label->get_compiled());
-						x += chip.w + 8;
+						auto chip_label = make_label(text, 10, f_medium, accent ? c_accent : c_text_dim);
+						auto chip = std::make_unique<rounded_rect>();
+						chip->set_pos(static_cast<s16>(x), static_cast<s16>(y));
+						chip->set_size(static_cast<u16>(chip_label->w + 26), 24);
+						chip->border_radius = 12;
+						chip->back_color = accent ? color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f) : color4f(1.f, 1.f, 1.f, 0.08f);
+						place(*chip_label, static_cast<s16>(x + 13), y + 12.f);
+						x += chip->w + 8;
+						chips.push_back(std::move(chip));
+						chips.push_back(std::move(chip_label));
 					}
 				}
+				y += 24.f + 26.f;
 
-				// The options
-				y += 56.f;
-				const char* options[] = {"Play", "Game settings", "Delete game", "Back to library"};
-				const char* notes[] = {"Start the game", "Its own settings, over the global ones", "Remove its files from the console", ""};
-				for (int o = 0; o < 4; o++)
+				struct option
+				{
+					const char* text;
+					const char* note;
+					image_info* icon;
+				};
+				const option options[] =
+				{
+					{"Play", "Start the game", m_play_icon_data.get()},
+					{"Game settings", "Its own settings, over the global ones", m_settings_icon_data.get()},
+					{m_flipped ? "Look at the front" : "Look at the back", "Turn the case round (R3)", m_flip_icon_data.get()},
+					{"Delete game", "Remove its files from the console", m_delete_icon_data.get()},
+					{"Back to library", "", m_back_icon_data.get()},
+				};
+				constexpr f32 pill_h = 52.f;
+				constexpr f32 pill_gap = 8.f;
+				std::vector<std::unique_ptr<overlay_element>> rows;
+				for (int o = 0; o < 5; o++)
 				{
 					const bool selected = o == m_detail_option;
-					const f32 row_y = y + o * 58.f;
-					if (selected)
-					{
-						rounded_rect bar;
-						bar.set_pos(left - 16, static_cast<s16>(row_y));
-						bar.set_size(width, 50);
-						bar.border_radius = 14;
-						bar.back_color = color4f(1.f, 1.f, 1.f, 0.12f);
-						menu.add(bar.get_compiled());
+					const f32 row_y = y + o * (pill_h + pill_gap);
+					const color4f ink = selected ? c_button_text : c_text;
 
-						rounded_rect mark;
-						mark.set_pos(left - 16, static_cast<s16>(row_y + 12));
-						mark.set_size(4, 26);
-						mark.border_radius = 2;
-						mark.back_color = c_accent;
-						menu.add(mark.get_compiled());
+					auto pill = std::make_unique<rounded_rect>();
+					pill->set_pos(left - 12, static_cast<s16>(row_y));
+					pill->set_size(inner + 24, static_cast<u16>(pill_h));
+					pill->border_radius = static_cast<u16>(pill_h / 2);
+					pill->back_color = selected ? c_accent : color4f(1.f, 1.f, 1.f, 0.06f);
+					rows.push_back(std::move(pill));
+
+					// The icon in a disc of its own
+					auto disc = std::make_unique<ellipse>();
+					disc->set_size(36, 36);
+					disc->set_pos(left - 4, static_cast<s16>(row_y + 8));
+					disc->back_color = selected ? color4f(1.f, 1.f, 1.f, 0.35f) : color4f(1.f, 1.f, 1.f, 0.08f);
+					rows.push_back(std::move(disc));
+					if (options[o].icon)
+					{
+						auto icon = std::make_unique<image_view>();
+						icon->set_raw_image(options[o].icon);
+						icon->set_size(18, 18);
+						icon->set_pos(left + 5, static_cast<s16>(row_y + 17));
+						icon->back_color.a = 0.f;
+						icon->fore_color = ink;
+						rows.push_back(std::move(icon));
 					}
 
-					auto text = make_label(options[o], 15, selected ? f_semibold : f_medium, selected ? c_text : c_text_dim);
-					place(*text, left + 6, row_y + (notes[o][0] && selected ? 18.f : 25.f));
-					menu.add(text->get_compiled());
-					if (selected && notes[o][0])
+					const bool noted = selected && options[o].note[0];
+					auto text = make_label(options[o].text, 14, selected ? f_bold : f_medium, ink);
+					place(*text, left + 46, row_y + (noted ? 19.f : pill_h / 2.f));
+					rows.push_back(std::move(text));
+					if (noted)
 					{
-						auto note = make_label(notes[o], 10, f_regular, c_text_dim);
-						place(*note, left + 6, row_y + 36.f);
-						menu.add(note->get_compiled());
+						auto note = make_label(options[o].note, 10, f_medium, color4f(c_button_text.r, c_button_text.g, c_button_text.b, 0.7f));
+						place(*note, left + 46, row_y + 36.f);
+						rows.push_back(std::move(note));
 					}
 					if (selected)
 					{
-						auto chevron = make_label("›", 18, f_semibold, c_accent);
-						place(*chevron, static_cast<s16>(left - 16 + width - 30), row_y + 25.f);
-						menu.add(chevron->get_compiled());
+						auto chevron = make_label("\u203a", 20, f_bold, ink);
+						place(*chevron, static_cast<s16>(left + inner - 14), row_y + pill_h / 2.f);
+						rows.push_back(std::move(chevron));
 					}
 				}
+
+				const f32 bottom = y + 5 * (pill_h + pill_gap) + 18.f;
+				auto tip = make_label("Right stick turns the case  \u00b7  R3 turns it round", 10, f_medium, c_text_dim);
+				place(*tip, left, bottom + 8.f);
+
+				card.set_size(card_w, static_cast<u16>(bottom + 36 - card_y));
+				menu.add(card.get_compiled());
+				menu.add(edge.get_compiled());
+				menu.add(kicker->get_compiled());
+				menu.add(title.get_compiled());
+				for (const auto& chip : chips) menu.add(chip->get_compiled());
+				for (const auto& row : rows) menu.add(row->get_compiled());
+				menu.add(tip->get_compiled());
 
 				add_animated(result, menu, detail, 40.f * (1.f - detail), 0.f);
 			}
@@ -2421,6 +2671,8 @@ namespace rsx::overlays
 			const f32 target_pitch = stick_y * 28.f * deg + std::sin(m_sway_time * 0.5f) * 2.5f * deg * (1.f - std::abs(stick_y));
 			const f32 follow = 1.f - std::exp(-dt * 9.f);
 			m_cover_yaw += (target_yaw - m_cover_yaw) * follow;
+			const f32 flip_target = m_flipped ? 3.14159265f : 0.f;
+			m_flip_angle += (flip_target - m_flip_angle) * (1.f - std::exp(-dt * 7.f));
 			m_cover_pitch += (target_pitch - m_cover_pitch) * follow;
 			const f32 target = static_cast<f32>(m_selected);
 			m_flow_pos += (target - m_flow_pos) * (1.f - std::exp(-dt * 11.f));
