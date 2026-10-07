@@ -568,6 +568,15 @@ namespace rsx::overlays
 		m_library_art.back_color.a = 0.f;
 		m_library_art.set_blur_strength(60);
 
+		// The Library's own picture (the title's art), if it is there
+		m_library_backdrop_data = load_image("/app0/assets/launcher/background.jpg");
+		if (m_library_backdrop_data)
+		{
+			m_library_backdrop.set_raw_image(m_library_backdrop_data.get());
+			m_library_backdrop.set_size(virtual_width, virtual_height);
+			m_library_backdrop.back_color.a = 0.f;
+		}
+
 		for (image_view* fade : {&m_fade_left, &m_fade_top, &m_fade_bottom})
 		{
 			fade->fore_color = c_backdrop;
@@ -1823,7 +1832,16 @@ namespace rsx::overlays
 	{
 		// The selected game's art, blurred and dim, under a glow in the app's
 		// colours: a wide blue one and a cyan heart behind the middle cover
-		if (m_background_image)
+		if (m_library_backdrop_data)
+		{
+			// The title's picture, a little dimmed so the covers stand out
+			result.add(m_library_backdrop.get_compiled());
+			overlay_element veil;
+			veil.set_size(virtual_width, virtual_height);
+			veil.back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.3f);
+			result.add(veil.get_compiled());
+		}
+		else if (m_background_image)
 		{
 			m_library_art.set_raw_image(m_background_image);
 			m_library_art.fore_color = color4f(1.f, 1.f, 1.f, 0.16f);
@@ -1840,7 +1858,10 @@ namespace rsx::overlays
 			view.set_size(w, h);
 			result.add(view.get_compiled());
 		};
-		glow(640, 340, 1500, 900, color4f(0.16f, 0.3f, 0.8f, 0.32f));
+		if (!m_library_backdrop_data)
+		{
+			glow(640, 340, 1500, 900, color4f(0.16f, 0.3f, 0.8f, 0.32f));
+		}
 		glow(640, 330, 720, 600, color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f));
 
 		if (m_games.empty())
