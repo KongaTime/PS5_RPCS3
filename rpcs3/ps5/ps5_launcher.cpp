@@ -313,6 +313,35 @@ namespace rsx::overlays
 
 			constexpr u16 band = 34;
 			f32 rgba[4];
+
+			// The fill's art boiled down to 6x7 averaged pixels: stretched over
+			// the case, a soft wash of its colours with nothing busy in it
+			constexpr u16 soft_w = 6, soft_h = 7;
+			std::vector<u8> soft_pixels(usz{soft_w} * soft_h * 4, 0);
+			if (fill)
+			{
+				const u8* data = fill->get_data();
+				for (u16 sy = 0; sy < soft_h; sy++)
+				{
+					for (u16 sx = 0; sx < soft_w; sx++)
+					{
+						const int x0 = sx * fill->w / soft_w, x1 = std::max(x0 + 1, (sx + 1) * fill->w / soft_w);
+						const int y0 = sy * fill->h / soft_h, y1 = std::max(y0 + 1, (sy + 1) * fill->h / soft_h);
+						u64 sum[4]{};
+						u64 n = 0;
+						for (int yy = y0; yy < y1; yy += 2)
+						{
+							for (int xx = x0; xx < x1; xx += 2)
+							{
+								for (int c = 0; c < 4; c++) sum[c] += data[(yy * fill->w + xx) * 4 + c];
+								n++;
+							}
+						}
+						for (int c = 0; c < 4; c++) soft_pixels[(sy * soft_w + sx) * 4 + c] = static_cast<u8>(sum[c] / std::max<u64>(n, 1));
+					}
+				}
+			}
+			memory_image_info soft(soft_w, soft_h, u8{4}, soft_pixels.data());
 			for (u16 y = 0; y < c_cover_h; y++)
 			{
 				for (u16 x = 0; x < c_cover_w; x++)
@@ -320,12 +349,11 @@ namespace rsx::overlays
 					f32 r = 10, g = 14, b = 30;
 					if (fill)
 					{
-						// Scaled to cover the case, centred
-						const f32 scale = std::max(static_cast<f32>(c_cover_w) / fill->w, static_cast<f32>(c_cover_h) / fill->h);
-						const f32 u = 0.5f + (x + 0.5f - c_cover_w / 2.f) / (fill->w * scale);
-						const f32 v = 0.5f + (y + 0.5f - c_cover_h / 2.f) / (fill->h * scale);
-						sample(*fill, u, v, rgba);
-						const f32 shade = 0.62f - 0.3f * (static_cast<f32>(y) / c_cover_h);
+						// The art's colours only: its tiny version, stretched
+						const f32 u = (x + 0.5f) / c_cover_w;
+						const f32 v = (y + 0.5f) / c_cover_h;
+						sample(soft, u, v, rgba);
+						const f32 shade = 0.7f - 0.35f * (static_cast<f32>(y) / c_cover_h);
 						r = rgba[0] * shade, g = rgba[1] * shade, b = rgba[2] * shade;
 					}
 					if (y < band)
@@ -681,11 +709,12 @@ namespace rsx::overlays
 		m_row_rule.set_size(static_cast<u16>(c_right - m_row_rule.x), 1);
 		m_row_rule.back_color = color4f(1.f, 1.f, 1.f, 0.2f);
 
-		m_highlight.border_radius = c_tile_radius + 4;
-		m_highlight.border_size = 3;
-		m_highlight.border_color = c_accent;
-		m_highlight.back_color.a = 0.f;
-		m_highlight.set_size(c_tile_w + 10, c_tile_h + 10);
+		// A rim: filled, behind the tile, which covers all but its edge. (An
+		// outline-only rounded_rect leaks a hairline along its diagonal, where
+		// its two triangles meet, across whatever it is drawn over)
+		m_highlight.border_radius = c_tile_radius + 3;
+		m_highlight.back_color = c_accent;
+		m_highlight.set_size(c_tile_w + 6, c_tile_h + 6);
 
 		style_label(m_placeholder, "Looking for games...", 13, f_regular, c_text_dim);
 		place(m_placeholder, c_margin, c_row_y + 40);
@@ -934,7 +963,7 @@ namespace rsx::overlays
 
 			if (selected)
 			{
-				m_highlight.set_pos(static_cast<s16>(x - 5), static_cast<s16>(c_row_y - 5));
+				m_highlight.set_pos(static_cast<s16>(x - 3), static_cast<s16>(c_row_y - 3));
 				m_highlight.refresh();
 			}
 
@@ -965,7 +994,7 @@ namespace rsx::overlays
 		outline(m_settings_button, m_focus == focus::settings, 1, c_glass_border);
 		outline(m_delete_button, m_focus == focus::remove, 1, c_glass_border);
 
-		m_highlight.border_color = m_focus == focus::tiles ? c_accent : color4f(c_accent.r, c_accent.g, c_accent.b, 0.3f);
+		m_highlight.back_color = m_focus == focus::tiles ? c_accent : color4f(c_accent.r, c_accent.g, c_accent.b, 0.3f);
 		m_highlight.refresh();
 
 		layout_hints();
@@ -1797,15 +1826,9 @@ namespace rsx::overlays
 		if (m_background_image)
 		{
 			m_library_art.set_raw_image(m_background_image);
-			m_library_art.fore_color = color4f(1.f, 1.f, 1.f, 0.28f);
+			m_library_art.fore_color = color4f(1.f, 1.f, 1.f, 0.16f);
 			m_library_art.refresh();
 			result.add(m_library_art.get_compiled());
-		}
-		{
-			overlay_element veil;
-			veil.set_size(virtual_width, virtual_height);
-			veil.back_color = color4f(c_backdrop.r, c_backdrop.g, c_backdrop.b, 0.6f);
-			result.add(veil.get_compiled());
 		}
 		const auto glow = [&](s16 cx, s16 cy, u16 w, u16 h, const color4f& color)
 		{
@@ -1817,8 +1840,8 @@ namespace rsx::overlays
 			view.set_size(w, h);
 			result.add(view.get_compiled());
 		};
-		glow(640, 340, 1500, 900, color4f(0.16f, 0.32f, 0.85f, 0.55f));
-		glow(640, 330, 760, 620, color4f(c_accent.r, c_accent.g, c_accent.b, 0.3f));
+		glow(640, 340, 1500, 900, color4f(0.16f, 0.3f, 0.8f, 0.32f));
+		glow(640, 330, 720, 600, color4f(c_accent.r, c_accent.g, c_accent.b, 0.16f));
 
 		if (m_games.empty())
 		{
@@ -1957,21 +1980,20 @@ namespace rsx::overlays
 				}
 			}
 
-			add_face(cover, p, centre_y, 0.f, 1.f, 0.f, 1.f, color4f(p.shade, p.shade, p.shade, p.alpha), false);
-
 			if (focus > 0.f)
 			{
-				rounded_rect ring;
+				// The rim: filled, behind the face (see m_highlight)
+				rounded_rect rim;
 				const f32 w = p.x_right - p.x_left;
 				const f32 h = std::max(p.h_left, p.h_right);
-				ring.set_pos(static_cast<s16>(p.x_left - 4), static_cast<s16>(centre_y - h / 2.f - 4));
-				ring.set_size(static_cast<u16>(w + 8), static_cast<u16>(h + 8));
-				ring.border_radius = 8;
-				ring.border_size = 3;
-				ring.border_color = color4f(c_accent.r, c_accent.g, c_accent.b, focus);
-				ring.back_color.a = 0.f;
-				result.add(ring.get_compiled());
+				rim.set_pos(static_cast<s16>(std::lround(p.x_left - 3)), static_cast<s16>(std::lround(centre_y - h / 2.f - 3)));
+				rim.set_size(static_cast<u16>(std::lround(w + 6)), static_cast<u16>(std::lround(h + 6)));
+				rim.border_radius = 6;
+				rim.back_color = color4f(c_accent.r, c_accent.g, c_accent.b, focus);
+				result.add(rim.get_compiled());
 			}
+
+			add_face(cover, p, centre_y, 0.f, 1.f, 0.f, 1.f, color4f(p.shade, p.shade, p.shade, p.alpha), false);
 		}
 
 		// The selected game: its name and what it is, under the row
@@ -2244,6 +2266,7 @@ namespace rsx::overlays
 
 		compiled_resource result;
 		result.add(m_backdrop.get_compiled());
+		if (m_tab != tab::library || m_gs_open)
 		{
 			compiled_resource art;
 			if (m_background_fading)
