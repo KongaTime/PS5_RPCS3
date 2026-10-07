@@ -106,7 +106,23 @@ namespace rsx
 
 				m_cache_addr = addr & -128;
 
-				const u32 addr1 = m_iotable->get_addr(m_cache_addr);
+				u32 addr1 = m_iotable->get_addr(m_cache_addr);
+
+				// PS5 fork: an early SDK's libgcm_sys (GTA IV, BLUS30127, context
+				// flags 0x210) queues its first commands in local memory (its
+				// context's buffer is at 0xC0001000) before it maps any io: with
+				// nothing mapped yet, the FIFO's offsets are read as local ones
+				// rather than declaring the queue dead
+				if (addr1 == umax && m_cache_addr < m_thread->local_mem_size &&
+					std::all_of(m_iotable->ea.begin(), m_iotable->ea.end(), [](const atomic_t<u32>& ea) { return ea == umax; }))
+				{
+					static atomic_t<bool> s_said = false;
+					if (!s_said.exchange(true))
+					{
+						rsx_log.warning("FIFO: nothing is io-mapped; reading the command queue at offset 0x%x from local memory", m_cache_addr);
+					}
+					addr1 = rsx::constants::local_mem_base + m_cache_addr;
+				}
 
 				if (addr1 == umax)
 				{
