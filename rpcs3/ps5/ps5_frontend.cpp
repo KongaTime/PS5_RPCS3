@@ -326,8 +326,19 @@ namespace
 
 	void create_callbacks()
 	{
+		// A blocking call made on the main thread itself runs at once: queued,
+		// it waited on itself (BootGame installing the Ratchet & Clank
+		// Collection disc's PKGDIR, BlockingCallFromMainThread, on my console)
+		static const std::thread::id s_main_thread = std::this_thread::get_id();
 		g_emu_callbacks.call_from_main_thread = [](std::function<void()> func, atomic_t<u32>* wake_up)
 		{
+			if (wake_up && std::this_thread::get_id() == s_main_thread)
+			{
+				func();
+				*wake_up = true;
+				wake_up->notify_one();
+				return;
+			}
 			g_main.post(std::move(func), wake_up);
 		};
 
@@ -440,7 +451,23 @@ namespace
 		g_emu_callbacks.get_image_info = [](const std::string&, std::string&, s32&, s32&, s32&) { return false; };
 		g_emu_callbacks.get_scaled_image = [](const std::string&, s32, s32, s32&, s32&, u8*, bool) { return false; };
 		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{}; };
-		g_emu_callbacks.on_install_pkgs = [](const std::vector<std::string>&, bool) { return false; };
+		// A disc's packages (PKGDIR, INSDIR, PS3_EXTRA), installed to dev_hdd0 at
+		// its first boot, as the desktop's headless frontend does
+		g_emu_callbacks.on_install_pkgs = [](const std::vector<std::string>& pkgs, bool from_optical_drive)
+		{
+			for (const std::string& pkg : pkgs)
+			{
+				trace("frontend: installing %s", pkg);
+				if (!rpcs3::utils::install_pkg(pkg, from_optical_drive))
+				{
+					sys_log.error("Failed to install %s", pkg);
+					trace("frontend: installing %s failed", pkg);
+					return false;
+				}
+			}
+			trace("frontend: %u packages installed", pkgs.size());
+			return true;
+		};
 		g_emu_callbacks.add_breakpoint = [](u32) {};
 		g_emu_callbacks.display_sleep_control_supported = []() { return false; };
 		g_emu_callbacks.enable_display_sleep = [](bool) {};
