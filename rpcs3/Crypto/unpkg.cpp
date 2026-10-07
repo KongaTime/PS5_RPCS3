@@ -941,6 +941,16 @@ bool package_reader::fill_data(std::map<std::string, install_entry*>& all_instal
 			pkg_log.warning("Failed to canonicalize path '%s' (%s); falling back to lexical normalization.", utf8_path, ec.message());
 			result = fs_path_from_utf8(utf8_path).lexically_normal();
 		}
+#ifdef __PROSPERO__
+		// PS5: libc++ gave an empty path and no error where the console refused
+		// its realpath (the Ratchet & Clank Collection disc's PKGDIR, on my
+		// console): the lexical form, rather than no installation at all
+		else if (result.empty())
+		{
+			pkg_log.warning("Canonical path of '%s' is empty; falling back to lexical normalization.", utf8_path);
+			result = fs_path_from_utf8(utf8_path).lexically_normal();
+		}
+#endif
 
 		return result;
 	};
