@@ -159,6 +159,17 @@ void ps5_pad_handler::process()
 		}
 		connected++;
 
+		// L1 + R1 + the touch pad's click is the PS button: the console's shell
+		// keeps the real one, and RPCS3's home menu (exit to the library,
+		// settings) opens on it (pad_thread). The game sees none of the three
+		// while they are held together
+		u32 buttons = in.buttons;
+		constexpr u32 home_combo = RPCS3_PS5_L1 | RPCS3_PS5_R1 | RPCS3_PS5_SELECT;
+		if ((buttons & home_combo) == home_combo)
+		{
+			buttons = (buttons & ~home_combo) | RPCS3_PS5_PS;
+		}
+
 		for (Button& button : pad->m_buttons)
 		{
 			u32 bit = 0;
@@ -197,7 +208,7 @@ void ps5_pad_handler::process()
 
 			if (bit)
 			{
-				button.m_pressed = (in.buttons & bit) != 0;
+				button.m_pressed = (buttons & bit) != 0;
 				button.m_value = button.m_pressed ? 255 : 0;
 			}
 			else
