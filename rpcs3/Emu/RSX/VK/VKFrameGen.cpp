@@ -99,7 +99,14 @@ void main()
 	{
 		cur[k] = texelFetch(tex1, min(base + ivec2(k & 3, k >> 2), lim), 0).r;
 	}
-	float best = 1e9;
+	// No motion first, and kept unless another vector is clearly better: in
+	// flat, plain areas (the ground under a shadow) every vector matches about
+	// as well, and the best by a hair is noise
+	float best = -0.006;
+	for (int k = 0; k < 16; k++)
+	{
+		best += abs(cur[k] - texelFetch(tex0, min(base + ivec2(k & 3, k >> 2), lim), 0).r) / 16.0;
+	}
 	vec2 best_v = vec2(0.0);
 	for (int dy = -12; dy <= 12; dy++)
 	{
@@ -118,7 +125,8 @@ void main()
 			}
 		}
 	}
-	imageStore(dst, p, vec4(best_v, best, 0.0));
+	// The error stored without no motion's head start
+	imageStore(dst, p, vec4(best_v, best + (best_v == vec2(0.0) ? 0.006 : 0.0), 0.0));
 }
 )",
 			// pass_fine_search: tex0 the last frame's working brightness, tex1
@@ -147,7 +155,12 @@ void main()
 	starts[3] = ivec2(round(texelFetch(tex2, clamp(cb - ivec2(1, 0), ivec2(0), coarse_lim), 0).xy * 4.0));
 	starts[4] = ivec2(round(texelFetch(tex2, clamp(cb + ivec2(0, 1), ivec2(0), coarse_lim), 0).xy * 4.0));
 	starts[5] = ivec2(round(texelFetch(tex2, clamp(cb - ivec2(0, 1), ivec2(0), coarse_lim), 0).xy * 4.0));
-	float best = 1e9;
+	// No motion first, kept unless another vector is clearly better (as in the coarse search)
+	float best = -0.006;
+	for (int k = 0; k < 64; k++)
+	{
+		best += abs(cur[k] - texelFetch(tex0, min(base + ivec2(k & 7, k >> 3), lim), 0).r) / 64.0;
+	}
 	vec2 best_v = vec2(0.0);
 	for (int c = 0; c < 6; c++)
 	{
@@ -170,7 +183,8 @@ void main()
 			}
 		}
 	}
-	imageStore(dst, p, vec4(best_v, best, 0.0));
+	// The error stored without no motion's head start
+	imageStore(dst, p, vec4(best_v, best + (best_v == vec2(0.0) ? 0.006 : 0.0), 0.0));
 }
 )",
 			// pass_median: tex0 the vectors; p0.xy their grid. Each vector's
@@ -221,8 +235,12 @@ void main()
 			// tex2 the vectors; p0 = (this frame's used part as a share of its
 			// texture, the output size), p1 = (the working size, the share of
 			// the vector grid it covers). Half way along each vector in both
-			// frames, averaged where they agree; where the match was poor, this
-			// frame as it is
+			// frames, averaged where the two agree closely. Anywhere else this
+			// frame as it is: where the block matched poorly, where the two
+			// disagree (GTA IV's shadows shimmer by themselves, and averaging two
+			// patterns softened every other frame's on my console, build 94), and
+			// where the pixel is the same in both frames unmoved (the HUD, the
+			// radar's frame and text, which the world's vectors dragged along)
 			R"(
 void main()
 {
@@ -234,11 +252,14 @@ void main()
 	const vec3 last = texture(tex0, uv + 0.5 * d).rgb;
 	const vec3 next = texture(tex1, (uv - 0.5 * d) * p0.xy).rgb;
 	const vec3 here = texture(tex1, uv * p0.xy).rgb;
+	const vec3 there = texture(tex0, uv).rgb;
+	const vec3 moved_gap = abs(last - next);
+	const vec3 still_gap = abs(there - here);
 	const float trust = 1.0 - smoothstep(0.035, 0.11, mv.z);
-	const vec3 gap = abs(last - next);
-	const float agree = 1.0 - smoothstep(0.08, 0.3, max(max(gap.r, gap.g), gap.b));
-	const vec3 between = mix(next, 0.5 * (last + next), agree);
-	imageStore(dst, p, vec4(mix(here, between, trust), 1.0));
+	const float agree = 1.0 - smoothstep(0.03, 0.1, max(max(moved_gap.r, moved_gap.g), moved_gap.b));
+	const float still = 1.0 - smoothstep(0.012, 0.04, max(max(still_gap.r, still_gap.g), still_gap.b));
+	const vec3 between = mix(here, 0.5 * (last + next), trust * agree);
+	imageStore(dst, p, vec4(mix(between, here, still), 1.0));
 }
 )",
 			// pass_keep: tex0 the frame; p0 = (its used part as a share of its

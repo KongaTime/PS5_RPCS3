@@ -450,9 +450,11 @@ namespace
 
 			// The launcher's and the pause menu's own notices, always and outside
 			// the caps: they are few, and they say what was asked between games
-			// (a boot from the launcher after the first game said nothing)
+			// (a boot from the launcher after the first game said nothing). And
+			// the audio output's, a line a port every ten seconds counting the
+			// grains the emulator was late with: the sound's stutter, measured
 			const std::string_view channel(msg->name);
-			if (msg <= logs::level::notice && (channel == "Launcher" || channel == "PauseMenu"))
+			if (msg <= logs::level::notice && (channel == "Launcher" || channel == "PauseMenu" || channel == "PS5Audio"))
 			{
 				trace("%s%s: %s", prefix, msg->name, text.substr(0, std::min<usz>(text.find('\n'), 200)));
 				return;
