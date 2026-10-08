@@ -160,6 +160,7 @@ namespace rsx::overlays
 		ellipse m_avatar;
 		label m_avatar_letter;
 		label m_user_name;
+		label m_build; // the title's build, beside the user
 
 		// Hero
 		label m_welcome;

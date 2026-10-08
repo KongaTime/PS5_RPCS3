@@ -32,6 +32,7 @@ LOG_CHANNEL(launcher_log, "Launcher");
 extern std::string g_cfg_defaults; // Emu/System.cpp: the config's defaults, as text
 void ps5_play_sound_file(const std::string& path); // ps5_sound.cpp
 void ps5_stop_sounds();
+const std::string& ps5_title_build(); // ps5_frontend.cpp
 
 namespace rsx::overlays
 {
@@ -927,6 +928,13 @@ namespace rsx::overlays
 		m_avatar.set_size(30, 30);
 		m_avatar.set_pos(static_cast<s16>(m_user_name.x - 12 - 30), c_bar_y - 15);
 		m_avatar.back_color = c_accent;
+
+		// Which build runs, so a test is never read against the wrong one
+		if (!ps5_title_build().empty())
+		{
+			style_label(m_build, "Build " + ps5_title_build(), 11, f_medium, c_text_dim);
+			place(m_build, static_cast<s16>(m_avatar.x - 24 - m_build.w), c_bar_y);
+		}
 
 		// The initial, centred on the circle by its drawn shape, not its advance
 		const std::u32string initial = utf8_to_u32string(user).substr(0, 1);
@@ -3876,6 +3884,10 @@ namespace rsx::overlays
 			top.add(m_avatar.get_compiled());
 			top.add(m_avatar_letter.get_compiled());
 			top.add(m_user_name.get_compiled());
+			if (!ps5_title_build().empty())
+			{
+				top.add(m_build.get_compiled());
+			}
 			add_animated(result, top, bar, 0.f, -10.f * (1.f - bar));
 
 			compiled_resource hints;

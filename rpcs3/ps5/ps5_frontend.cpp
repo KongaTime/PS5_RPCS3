@@ -93,6 +93,9 @@ namespace
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
 	void (*g_trace)(const char* line) = nullptr;
 
+	// The title's build (rpcs3_ps5_title::build), set once by rpcs3_ps5_run
+	std::string g_title_build;
+
 	// Set once the boot has started the game
 	atomic_t<bool> g_booted = false;
 
@@ -769,6 +772,7 @@ namespace
 int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 {
 	g_trace = title.trace;
+	g_title_build = title.build ? title.build : "";
 	ps5_pad_handler::set_source(title.poll_pads);
 
 	// RPCS3 is built without exceptions: its fatal errors (fmt::throw_exception)
@@ -776,11 +780,17 @@ int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 	return run(boot_path);
 }
 
+// The title's build, which the launcher shows (empty when the title has none)
+const std::string& ps5_title_build()
+{
+	return g_title_build;
+}
+
 namespace
 {
 int run(const char* boot_path)
 {
-	trace("frontend: start");
+	trace("frontend: start, build %s", g_title_build.empty() ? "unknown" : g_title_build);
 	record_signals();
 	ps5_set_terminate_handler();
 
@@ -824,7 +834,7 @@ int run(const char* boot_path)
 	std::unique_ptr<logs::listener> log_file = logs::make_file_listener(fs::get_cache_dir() + "RPCS3.log", 256ull * 1024 * 1024);
 	{
 		logs::stored_message ver{sys_log.always()};
-		ver.text = fmt::format("RPCS3 for the PS5, on %s", utils::get_system_info());
+		ver.text = fmt::format("RPCS3 for the PS5, build %s, on %s", g_title_build.empty() ? "unknown" : g_title_build, utils::get_system_info());
 		logs::set_init({std::move(ver)});
 	}
 

@@ -52,6 +52,9 @@ struct rpcs3_ps5_title
 	// Records one line where it survives a crash (the title's trace file), from
 	// any thread: each step of the start, and RPCS3's warnings and errors
 	void (*trace)(const char* line);
+
+	// The title's build ("87"), which the launcher shows; null when it has none
+	const char* build;
 };
 
 // boot_path: what to boot (an ELF, or a game's folder); empty to start the
