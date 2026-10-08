@@ -240,6 +240,7 @@ namespace rsx::overlays
 		bool m_detail = false;
 		bool m_flipped = false;    // the selected case shows its back
 		f32 m_flip_angle = 0.f;    // eases to pi when flipped
+		f32 m_spin = 0.f;          // the turn a spin has left, as a case opens into its menu
 		std::vector<u8> m_sheen_pixels;
 		std::unique_ptr<memory_image_info> m_sheen_image;
 		std::unique_ptr<image_info> m_flip_icon_data;

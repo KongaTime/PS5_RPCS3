@@ -33,7 +33,7 @@ namespace rsx::overlays::ps5ui
 	inline const color4f c_glass{0.02f, 0.03f, 0.07f, 0.42f};
 	inline const color4f c_glass_border{1.f, 1.f, 1.f, 0.22f};
 	inline const color4f c_backdrop{0.02f, 0.03f, 0.08f, 1.f};
-	inline const color4f c_library_blue{0.004f, 0.008f, 0.184f, 1.f}; // #01022F
+	inline const color4f c_library_blue{0.003f, 0.006f, 0.135f, 1.f}; // #010222, a shade darker than the first #01022F
 
 	// The title's fonts (/app0/assets/fonts, the frontend's font folder);
 	// characters they lack come from the PS3's own font

@@ -1338,6 +1338,7 @@ namespace rsx::overlays
 		m_selected = index;
 		m_flipped = false;
 		m_flip_angle = 0.f;
+		m_spin = 0.f;
 		play_sound(sound_effect::cursor);
 		layout_home();
 	}
@@ -1933,7 +1934,7 @@ namespace rsx::overlays
 			view.set_size(w, h);
 			result.add(view.get_compiled());
 		};
-		glow(640, 340, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.45f));
+		glow(640, 340, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.34f));
 		glow(620, 360, 900, 700, color4f(c_accent.r, c_accent.g, c_accent.b, 0.06f));
 
 		const auto card = [&](s16 x, s16 y, u16 w, u16 h)
@@ -2377,9 +2378,10 @@ namespace rsx::overlays
 			select_game(m_selected + 5);
 			break;
 		case pad_button::cross:
-			// Into the game's own menu: its case comes forward
+			// Into the game's own menu: its case comes forward, spinning once
 			m_detail = true;
 			m_detail_option = 0;
+			m_spin += 2.f * 3.14159265f;
 			play_sound(sound_effect::accept);
 			layout_hints();
 			break;
@@ -2422,7 +2424,7 @@ namespace rsx::overlays
 			view.set_size(w, h);
 			result.add(view.get_compiled());
 		};
-		glow(640, 320, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.45f));
+		glow(640, 320, 1600, 1000, color4f(0.1f, 0.2f, 0.65f, 0.34f));
 
 		const f32 detail = m_detail_t * m_detail_t * (3.f - 2.f * m_detail_t);
 		const f32 floor_y = c_case_h / 2.f + 6.f;
@@ -2459,7 +2461,7 @@ namespace rsx::overlays
 
 			if (index == m_selected)
 			{
-				pose.yaw += m_flip_angle;
+				pose.yaw += m_flip_angle + m_spin;
 				pose.at = pose.at + vec3{-330.f, 6.f, -170.f} * detail;
 			}
 			else
@@ -3028,6 +3030,12 @@ namespace rsx::overlays
 			m_cover_yaw += (target_yaw - m_cover_yaw) * follow;
 			const f32 flip_target = m_flipped ? 3.14159265f : 0.f;
 			m_flip_angle += (flip_target - m_flip_angle) * (1.f - std::exp(-dt * 7.f));
+			// A spin's turn left to make: fast at first, settling over about a second
+			m_spin -= m_spin * (1.f - std::exp(-dt * 5.f));
+			if (m_spin < 0.002f)
+			{
+				m_spin = 0.f;
+			}
 			m_cover_pitch += (target_pitch - m_cover_pitch) * follow;
 			const f32 target = static_cast<f32>(m_selected);
 			m_flow_pos += (target - m_flow_pos) * (1.f - std::exp(-dt * 11.f));
