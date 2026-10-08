@@ -11,6 +11,7 @@
 #include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/RSX/Overlays/BigPicture/overlay_big_picture_game_info.h"
 #include "Emu/game_enumeration.h"
+#include "ps5_ui.h"
 
 #include <map>
 #include <memory>
@@ -211,17 +212,7 @@ namespace rsx::overlays
 		// Game settings: a page of the selected game's own settings, kept in its
 		// custom config (config/custom_configs/config_<serial>.yml), which the
 		// emulator lays over the global config when the game boots
-		struct game_setting
-		{
-			std::string section;
-			std::string key;
-			std::string label;
-			std::string help;
-			std::vector<std::string> options;
-			std::string global;
-			std::string value;
-			bool heading = false;
-		};
+		using game_setting = ps5ui::setting_row;
 
 		bool m_gs_open = false;
 		u64 m_gs_open_us = 0;

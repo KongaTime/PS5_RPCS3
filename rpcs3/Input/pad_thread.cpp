@@ -29,6 +29,9 @@
 #include "Emu/System.h"
 #include "Emu/system_config.h"
 #include "Emu/RSX/Overlays/HomeMenu/overlay_home_menu.h"
+#ifdef __PROSPERO__
+#include "ps5/ps5_pause_menu.h"
+#endif
 #include "Emu/RSX/Overlays/overlay_message.h"
 #include "Emu/Cell/lv2/sys_usbd.h"
 #include "Emu/Cell/Modules/cellGem.h"
@@ -960,7 +963,13 @@ void pad_thread::open_home_menu()
 
 		input_log.notice("opening home menu...");
 
+#ifdef __PROSPERO__
+		// PS5: the title's own pause menu, in the launcher's design
+		static_cast<void>(manager);
+		const error_code result = rsx::overlays::open_ps5_pause_menu([this](s32 status)
+#else
 		const error_code result = manager->create<rsx::overlays::home_menu_dialog>()->show([this](s32 status)
+#endif
 		{
 			input_log.notice("closing home menu with status %d", status);
 
