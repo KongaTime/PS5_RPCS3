@@ -1496,6 +1496,21 @@ void spu_thread::cpu_task()
 
 	gv_set_zeroing_denormals();
 
+#ifdef __PROSPERO__
+	// PS5: the kernel of a SPURS instance of one SPU runs a step above the
+	// rest, as the audio output thread does. GTA IV's (its secondary
+	// instance, by its local storage the Miles Sound System's MP3 decoding and
+	// mixing) ran 80-100% of the time in busy streets on my console (build
+	// 93's trace), and the sound broke up there
+	if (group && group->max_num == 1)
+	{
+		if (const auto name = spu_tname.load(); name && name->find("CellSpursKernel") != umax)
+		{
+			thread_ctrl::set_native_priority(1);
+		}
+	}
+#endif
+
 	g_tls_log_prefix = []
 	{
 		const auto cpu = static_cast<spu_thread*>(get_current_cpu_thread());

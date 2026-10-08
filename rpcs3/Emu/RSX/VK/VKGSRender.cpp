@@ -842,6 +842,9 @@ VKGSRender::~VKGSRender()
 
 	// Upscaler (references some global resources)
 	m_upscaler.reset();
+#ifdef __PROSPERO__
+	m_frame_generator.reset();
+#endif
 
 	// Heaps
 	vk::data_heap_manager::reset();

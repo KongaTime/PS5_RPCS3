@@ -55,6 +55,7 @@ namespace rsx::overlays
 		{
 			{"Video/Performance Overlay", "Enabled", "Performance overlay"},
 			{"Video", "Frame limit", "Frame limit"},
+			{"Video", "Frame Generation", "Frame generation"},
 			{"Audio", "Master Volume", "Volume"},
 		};
 

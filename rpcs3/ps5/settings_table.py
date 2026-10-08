@@ -44,6 +44,15 @@ EXTRA = [
     ("RelaxedZCULL", "GPU", "PreciseZCULL", "Precise ZCULL stats", "zcull_operation_mode"),
 ]
 
+# The PS5 port's own settings, which the desktop dialog lacks:
+# (after this one, tab, setting, label, help)
+PS5_EXTRA = [
+    ("OutputScalingMode", "GPU", "FrameGeneration", "Frame generation",
+     "Shows a frame made between each two of the game's, when the game runs slower than about 37 fps: "
+     "motion looks about twice as smooth. The game itself runs no faster, each of its frames reaches "
+     "the screen one refresh (17 ms) later, and fast motion, text and the HUD can shimmer or smear."),
+]
+
 # Labels clearer alone than under the dialog's shared group boxes
 LABELS = {
     "PerfOverlayDetailLevel": "Performance overlay detail level",
@@ -184,6 +193,9 @@ def main():
     for after, tab, setting, label, tooltip in EXTRA:
         at = next(i for i, row in enumerate(ordered) if row[2] == after)
         ordered.insert(at + 1, (ordered[at][0], tab, setting, label, tips.get(tooltip, "")))
+    for after, tab, setting, label, text in PS5_EXTRA:
+        at = next(i for i, row in enumerate(ordered) if row[2] == after)
+        ordered.insert(at + 1, (ordered[at][0], tab, setting, label, text))
 
     tab_order = list(TABS.values())
     ordered = [row for tab in tab_order for row in ordered if row[1] == tab]

@@ -109,6 +109,7 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::AllowHostGPULabels,         get_cfg_location(local_cfg.video.host_label_synchronization) },
 	{ emu_settings_type::DisableMSLFastMath,         get_cfg_location(local_cfg.video.disable_msl_fast_math) },
 	{ emu_settings_type::OutputScalingMode,          get_cfg_location(local_cfg.video.output_scaling) },
+	{ emu_settings_type::FrameGeneration,            get_cfg_location(local_cfg.video.frame_generation) }, // PS5
 	{ emu_settings_type::ForceHwMSAAResolve,         get_cfg_location(local_cfg.video.force_hw_MSAA_resolve) },
 	{ emu_settings_type::DisableAsyncHostMM,         get_cfg_location(local_cfg.video.disable_async_host_memory_manager) },
 	{ emu_settings_type::RecordWithOverlays,         get_cfg_location(local_cfg.video.record_with_overlays) },

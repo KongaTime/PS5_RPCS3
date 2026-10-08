@@ -79,6 +79,9 @@ bool VKGSRender::reinitialize_swapchain()
 
 	// Discard the current upscaling pipeline if any
 	m_upscaler.reset();
+#ifdef __PROSPERO__
+	m_frame_generator.reset();
+#endif
 
 	// Drain all the queues
 	vkDeviceWaitIdle(*m_device);
@@ -587,6 +590,11 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 		evaluate_cpu_usage_reduction_limits();
 	}
 
+	// Draws image_to_flip (and the second eye's) on a swapchain image, the
+	// overlays over it, and presents it. PS5: twice for a game's frame with frame
+	// generation, first the frame made between its last one and it
+	const auto present_source = [&](vk::viewable_image* image_to_flip, vk::viewable_image* image_to_flip2, [[maybe_unused]] bool generated_frame)
+	{
 	// Prepare surface for new frame. Set no timeout here so that we wait for the next image if need be
 	ensure(m_current_frame->present_image == umax);
 	ensure(m_current_frame->swap_command_buffer == nullptr);
@@ -658,8 +666,8 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	rsx::simple_array<vk::viewable_image*> calibration_src;
 
 	const bool has_overlay = (m_overlay_manager && m_overlay_manager->has_visible());
-	const bool user_asked_for_screenshot = g_user_asked_for_screenshot.exchange(false);
-	const bool user_is_recording = (g_recording_mode != recording_mode::stopped && m_frame->can_consume_frame());
+	const bool user_asked_for_screenshot = !generated_frame && g_user_asked_for_screenshot.exchange(false);
+	const bool user_is_recording = !generated_frame && (g_recording_mode != recording_mode::stopped && m_frame->can_consume_frame());
 	const bool need_media_capture = user_asked_for_screenshot || user_is_recording;
 
 	const auto render_overlays = [&](vk::framebuffer_holder* fbo, const areau& area)
@@ -911,7 +919,7 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 
 		render_overlays(direct_fbo, areau(aspect_ratio));
 
-		if (g_cfg.video.debug_overlay)
+		if (g_cfg.video.debug_overlay && !generated_frame)
 		{
 			const auto num_dirty_textures = m_texture_cache.get_unreleased_textures_count();
 			const auto texture_memory_size = m_texture_cache.get_texture_memory_in_use() / (1024 * 1024);
@@ -973,6 +981,47 @@ void VKGSRender::flip(const rsx::display_flip_info_t& info)
 	}
 
 	queue_swap_request();
+	};
+
+#ifdef __PROSPERO__
+	// PS5: frame generation. The frame made between the game's last frame and
+	// this one goes up first, a refresh before this one: only when the game came
+	// more than 1.6 refreshes (at 60 Hz) after its last frame, so that two
+	// presents a frame never hold back a game that keeps up with the display,
+	// and not after a long gap (a load, a pause), with nothing to move between
+	if (info.emu_flip && image_to_flip)
+	{
+		const u64 now = get_system_time();
+		const u64 since = m_last_game_flip_us ? now - m_last_game_flip_us : 0;
+		m_last_game_flip_us = now;
+
+		if (g_cfg.video.frame_generation && !image_to_flip2)
+		{
+			if (!m_frame_generator)
+			{
+				m_frame_generator = std::make_unique<vk::frame_generator>();
+			}
+
+			const bool due = since >= 26'700 && since <= 150'000;
+			if (vk::viewable_image* between = m_frame_generator->process(*m_current_command_buffer, image_to_flip, buffer_width, buffer_height, due))
+			{
+				present_source(between, nullptr, true);
+
+				// The next frame context, as after back-to-back flips
+				if (m_current_frame->swap_command_buffer)
+				{
+					frame_context_cleanup(m_current_frame);
+				}
+			}
+		}
+		else if (m_frame_generator)
+		{
+			m_frame_generator->reset();
+		}
+	}
+#endif
+
+	present_source(image_to_flip, image_to_flip2, false);
 
 	m_frame_stats.flip_time = m_profiler.duration();
 

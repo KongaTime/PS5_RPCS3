@@ -10,6 +10,9 @@
 #include "vkutils/swapchain.h"
 
 #include "VKGSRenderTypes.hpp"
+#ifdef __PROSPERO__
+#include "VKFrameGen.h"
+#endif
 #include "VKTextureCache.h"
 #include "VKRenderTargets.h"
 #include "VKFormats.h"
@@ -68,6 +71,12 @@ private:
 
 	std::unique_ptr<vk::upscaler> m_upscaler;
 	output_scaling_mode m_output_scaling{output_scaling_mode::bilinear};
+
+#ifdef __PROSPERO__
+	// PS5: frame generation (VKFrameGen.h), and when the game's last frame came
+	std::unique_ptr<vk::frame_generator> m_frame_generator;
+	u64 m_last_game_flip_us = 0;
+#endif
 
 	std::unique_ptr<vk::buffer> m_cond_render_buffer;
 	u64 m_cond_render_sync_tag = 0;

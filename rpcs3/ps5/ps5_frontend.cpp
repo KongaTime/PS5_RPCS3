@@ -88,6 +88,7 @@ std::u32string utf8_to_u32string(std::string_view utf8_string);
 
 u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
 extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
+extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 
 namespace
 {
@@ -1239,8 +1240,8 @@ int run(const char* boot_path)
 						else if (S_ISSOCK(info.st_mode)) sockets++;
 						else others++;
 					}
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s", seconds + 1,
-						static_cast<u32>(Emu.GetStatus()), flips, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
+					trace("status %ds: state %d, RSX flips %d (%u made between); heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s", seconds + 1,
+						static_cast<u32>(Emu.GetStatus()), flips, static_cast<u32>(g_ps5_frames_generated.load()), heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
 						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, regular, folders, sockets, others, static_cast<u32>(fs::ps5_open_tracked()), count, ppus);
 					// Near the limit, which ones (once per 40 more)
 					static u32 s_reported = 0;
