@@ -124,9 +124,17 @@ namespace
 		u32 samples = 0;
 	};
 
-	std::map<u64, sampled_load> g_loads;  // by group (PPU 0, SPU 1) and id, for the trace; the status thread's alone
+	// The PS3's threads are read on the main thread, where a stop and the
+	// next boot reset the object manager (g_fxo->reset, in Kill and Init)
+	// without the lock idm::select takes: the status thread, listing them
+	// itself, read a destroyed thread as the launcher's shell stopped and GTA
+	// IV booted, and the app froze (build 88, on my console). The samples the
+	// main thread takes, the status thread sums under this lock
+	std::mutex g_loads_mutex;
+	std::map<u64, sampled_load> g_loads;  // by group (PPU 0, SPU 1) and id, for the trace
 	u32 g_group_running[2]{};             // the groups' running threads, summed over the samples
 	u32 g_group_samples = 0;
+	atomic_t<bool> g_sample_posted = false; // one sample waiting for the main thread at most
 	atomic_t<f32> g_group_load[2]{};      // each group's running threads as a share of the hardware threads, over the last five seconds
 
 	bool is_running(const cpu_thread& thread)
@@ -134,8 +142,10 @@ namespace
 		return !(thread.state & (cpu_flag::wait + cpu_flag::stop + cpu_flag::exit + cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause));
 	}
 
+	// On the main thread
 	void sample_thread_loads()
 	{
+		std::lock_guard lock(g_loads_mutex);
 		const auto sample = [&](u32 group, u32 id, const cpu_thread& thread, auto&& name)
 		{
 			sampled_load& load = g_loads[u64{group} << 32 | id];
@@ -163,6 +173,7 @@ namespace
 	// the groups' loads for the overlay; the counts begin again
 	std::string take_thread_loads()
 	{
+		std::lock_guard lock(g_loads_mutex);
 		const f32 hardware = static_cast<f32>(std::max<u32>(1, utils::get_thread_count()));
 		for (u32 group = 0; group < 2; group++)
 		{
@@ -1089,36 +1100,71 @@ int run(const char* boot_path)
 					for (u32 tick = 0; tick < 20 && thread_ctrl::state() != thread_state::aborting; tick++)
 					{
 						thread_ctrl::wait_for(50'000);
-						if (sampling && Emu.IsRunning())
+						if (sampling && Emu.IsRunning() && !g_sample_posted.exchange(true))
 						{
-							sample_thread_loads();
+							g_main.post([]()
+							{
+								if (Emu.IsRunning())
+								{
+									sample_thread_loads();
+								}
+								g_sample_posted = false;
+							}, nullptr);
 						}
 					}
 					running_for = Emu.IsRunning() && !Emu.GetTitleID().empty() ? running_for + 1 : 0;
 					if (!running_for)
 					{
+						std::lock_guard lock(g_loads_mutex);
 						g_loads.clear();
 					}
 					if (seconds % 5 != 4 || Emu.IsStopped())
 					{
 						continue;
 					}
-					const auto render = rsx::get_current_renderer();
-
 					// The busiest of the PS3's threads over these five seconds
 					if (const std::string busiest = take_thread_loads(); !busiest.empty())
 					{
 						trace("busiest threads (share of the time each was running):%s; collision functions compiled accurate: %u", busiest, spu_accurate_xfloat_functions());
 					}
 
-					std::string ppus;
-					const u32 count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
+					// RSX's flips and where the PPU threads are, read on the main
+					// thread (g_loads_mutex); not waited for long, so a main thread
+					// that hangs still leaves the rest of this line
+					struct emulator_view
 					{
-						if (ppus.size() < 600)
+						atomic_t<u32> done = 0;
+						u64 flips = 0;
+						u32 count = 0;
+						std::string ppus;
+					};
+					const auto view = std::make_shared<emulator_view>();
+					g_main.post([view]()
+					{
+						if (!Emu.IsStopped())
 						{
-							fmt::append(ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
+							if (const auto render = rsx::get_current_renderer())
+							{
+								view->flips = render->int_flip_index;
+							}
+							view->count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
+							{
+								if (view->ppus.size() < 600)
+								{
+									fmt::append(view->ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
+								}
+							});
 						}
-					});
+						view->done = 1;
+					}, nullptr);
+					for (u32 wait = 0; wait < 10 && !view->done && thread_ctrl::state() != thread_state::aborting; wait++)
+					{
+						thread_ctrl::wait_for(20'000);
+					}
+					const bool seen = view->done != 0;
+					const u64 flips = seen ? view->flips : 0;
+					const u32 count = seen ? view->count : 0;
+					const std::string ppus = seen ? view->ppus : std::string(" (not read: the main thread is busy)");
 					// And memory: the home menu's run ended at 205 s with no error of
 					// RPCS3's or signal (71d0fa2), as the kernel ends a title out of
 					// memory or after a GPU fault
@@ -1147,7 +1193,7 @@ int run(const char* boot_path)
 						else others++;
 					}
 					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s", seconds + 1,
-						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
+						static_cast<u32>(Emu.GetStatus()), flips, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
 						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, regular, folders, sockets, others, static_cast<u32>(fs::ps5_open_tracked()), count, ppus);
 					// Near the limit, which ones (once per 40 more)
 					static u32 s_reported = 0;
