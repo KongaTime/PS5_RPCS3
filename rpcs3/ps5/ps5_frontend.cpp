@@ -87,6 +87,7 @@ const char* ps5_localized_string(localized_string_id id);
 std::u32string utf8_to_u32string(std::string_view utf8_string);
 
 u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
+extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
 
 namespace
 {
@@ -122,6 +123,8 @@ namespace
 		std::string name;
 		u32 running = 0;
 		u32 samples = 0;
+		u32 spu_index = umax;          // an SPU's index, for its GETLLAR counts
+		std::map<u32, u32> spu_pcs;    // where an SPU was when sampled running, by local storage address
 	};
 
 	// The PS3's threads are read on the main thread, where a stop and the
@@ -165,6 +168,12 @@ namespace
 		idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
 		{
 			sample(1, id, spu, [&] { return "SPU " + spu.get_name(); });
+			sampled_load& load = g_loads[u64{1} << 32 | id];
+			load.spu_index = spu.index;
+			if (is_running(spu) && load.spu_pcs.size() < 256)
+			{
+				load.spu_pcs[spu.pc]++;
+			}
 		});
 		g_group_samples++;
 	}
@@ -182,13 +191,48 @@ namespace
 		}
 		g_group_samples = 0;
 
+		// Each SPU slot's GETLLAR counts since the last call: an SPU polling for
+		// work, answered by busy waiting, counts as running, so a busy SPU says
+		// whether it worked or spun
+		static u64 s_waits[64][2]{};
+		static u64 s_last_us = 0;
+		const u64 now_us = get_system_time();
+		const f64 window = s_last_us ? (now_us - s_last_us) / 1e6 : 5.0;
+		s_last_us = now_us;
+		u64 waits[64][2]{};
+		for (u32 slot = 0; slot < 64; slot++)
+		{
+			for (u32 kind = 0; kind < 2; kind++)
+			{
+				const u64 count = g_ps5_getllar_waits[slot][kind].load();
+				waits[slot][kind] = count - s_waits[slot][kind];
+				s_waits[slot][kind] = count;
+			}
+		}
+
 		std::vector<std::pair<f64, std::string>> loads;
 		for (const auto& [key, load] : g_loads)
 		{
-			if (load.samples)
+			if (!load.samples)
 			{
-				loads.emplace_back(100.0 * load.running / load.samples, load.name);
+				continue;
 			}
+			const f64 share = 100.0 * load.running / load.samples;
+			std::string name = load.name;
+			if (load.spu_index != umax && share >= 50.0)
+			{
+				// Its three commonest places, and how its polls were answered
+				std::vector<std::pair<u32, u32>> pcs(load.spu_pcs.begin(), load.spu_pcs.end());
+				std::sort(pcs.begin(), pcs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+				fmt::append(name, " (at");
+				for (usz i = 0; i < pcs.size() && i < 3; i++)
+				{
+					fmt::append(name, " 0x%x %.0f%%", pcs[i].first, 100.0 * pcs[i].second / load.samples);
+				}
+				const u64* counts = waits[load.spu_index % 64];
+				fmt::append(name, "; polls spun %.0f/s, slept %.0f/s)", counts[0] / window, counts[1] / window);
+			}
+			loads.emplace_back(share, std::move(name));
 		}
 		g_loads.clear();
 		std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -879,6 +923,9 @@ int run(const char* boot_path)
 	trace("frontend: Emu.Init");
 	Emu.Init();
 	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p, executable range at %p", vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr);
+	// An SPU polling for work waits in user mode with MWAITX (AMD) or TPAUSE
+	// (Intel) when the CPU allows it, else in a loop of pauses
+	trace("frontend: SPU busy waits use %s", utils::has_um_wait() ? (utils::has_waitpkg() ? "TPAUSE" : "MWAITX") : "a loop of pauses (no user-mode wait)");
 
 	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
 	// as the desktop's File > Install Firmware does (ps5_firmware.cpp)

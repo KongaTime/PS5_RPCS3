@@ -46,6 +46,14 @@
 #endif
 #endif
 
+#ifdef __PROSPERO__
+// PS5: how each SPU's GETLLAR polling was answered, by the SPU's index (its
+// slot, index % 64): by busy waiting, which the trace's load sampler counts
+// as running, or by sleeping until the reservation changes. The trace's
+// busiest-threads line reports them (ps5_frontend.cpp)
+atomic_t<u64> g_ps5_getllar_waits[64][2]{};
+#endif
+
 // LUTs for SPU instructions
 
 const u32 spu_frest_fraction_lut[32] =
@@ -4403,6 +4411,9 @@ bool spu_thread::process_mfc_cmd()
 
 							if (getllar_busy_waiting_switch == 1)
 							{
+#ifdef __PROSPERO__
+								g_ps5_getllar_waits[index % 64][0].raw()++;
+#endif
 								getllar_wait_time[(addr % SPU_LS_SIZE) / 128].front() = 0;
 
 #if defined(ARCH_X64)
@@ -4447,6 +4458,9 @@ bool spu_thread::process_mfc_cmd()
 						}
 
 						// Spinning, might as well yield cpu resources
+#ifdef __PROSPERO__
+						g_ps5_getllar_waits[index % 64][1].raw()++;
+#endif
 						state += cpu_flag::wait;
 
 						usz cache_line_waiter_index = umax;
