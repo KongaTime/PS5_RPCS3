@@ -9,6 +9,9 @@
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/RSX/Core/RSXReservationLock.hpp"
 #include "Crypto/sha1.h"
+
+#include <cctype>
+#include <cstdlib>
 #include "Utilities/JIT.h"
 
 #include "SPUThread.h"
@@ -92,10 +95,28 @@ namespace
 	shared_mutex g_accurate_xfloat_lock;
 	std::vector<accurate_xfloat_image> g_accurate_xfloat_images;
 
-	// A test switch: with the file collision-test-off in the config folder
-	// (/app0/rpcs3/) when a game boots, its collision programs keep the
-	// configured accuracy, to measure what accurate collision costs
+	// Test switches, read as a game boots, from the config folder (/app0/rpcs3/,
+	// with or without a .txt the console's FTP clients add):
+	// - collision-test-off: its collision programs keep the configured
+	//   accuracy, to measure what accurate collision costs;
+	// - collision-ranges: hex ranges of local storage ("0x3000-0x11000 ..."),
+	//   and only the collision functions whose entry is in one are compiled
+	//   accurate, to find the ones collision needs it for
 	atomic_t<bool> g_accurate_xfloat_off = false;
+	std::vector<std::pair<u32, u32>> g_accurate_xfloat_ranges; // empty: all; under g_accurate_xfloat_lock
+	atomic_t<u32> g_accurate_xfloat_functions = 0;
+
+	std::string config_switch(std::string_view name)
+	{
+		for (const std::string path : {fs::get_config_dir() + std::string(name), fs::get_config_dir() + std::string(name) + ".txt"})
+		{
+			if (fs::is_file(path))
+			{
+				return path;
+			}
+		}
+		return {};
+	}
 
 	bool needs_accurate_xfloat(const spu_program& func)
 	{
@@ -105,6 +126,11 @@ namespace
 		}
 
 		reader_lock lock(g_accurate_xfloat_lock);
+		if (!g_accurate_xfloat_ranges.empty() && std::none_of(g_accurate_xfloat_ranges.begin(), g_accurate_xfloat_ranges.end(),
+			[&](const std::pair<u32, u32>& range) { return func.entry_point >= range.first && func.entry_point < range.second; }))
+		{
+			return false;
+		}
 		const u32 start = func.lower_bound;
 		const u32 end = start + ::size32(func.data) * 4;
 		for (const accurate_xfloat_image& image : g_accurate_xfloat_images)
@@ -139,7 +165,7 @@ void spu_note_program_image(std::string_view name, u32 vaddr, const void* data, 
 	{
 		return;
 	}
-	if (fs::is_file(fs::get_config_dir() + "collision-test-off"))
+	if (!config_switch("collision-test-off").empty())
 	{
 		if (!g_accurate_xfloat_off.exchange(true))
 		{
@@ -149,6 +175,37 @@ void spu_note_program_image(std::string_view name, u32 vaddr, const void* data, 
 	}
 	g_accurate_xfloat_off = false;
 	std::lock_guard lock(g_accurate_xfloat_lock);
+
+	// The ranges, read again at each boot
+	g_accurate_xfloat_ranges.clear();
+	g_accurate_xfloat_functions = 0;
+	if (const std::string path = config_switch("collision-ranges"); !path.empty())
+	{
+		std::string text = fs::file(path).to_string();
+		std::string said;
+		// Each range two 0x numbers with a dash between; anything else is skipped
+		for (usz at = text.find("0x"); at != umax;)
+		{
+			char* end = nullptr;
+			const u32 low = static_cast<u32>(std::strtoul(text.c_str() + at, &end, 16));
+			const usz dash = text.find('-', static_cast<usz>(end - text.c_str()));
+			const usz next = dash == umax ? umax : text.find("0x", dash);
+			if (next == umax)
+			{
+				break;
+			}
+			const u32 high = static_cast<u32>(std::strtoul(text.c_str() + next, &end, 16));
+			if (low < high)
+			{
+				g_accurate_xfloat_ranges.emplace_back(low, high);
+				fmt::append(said, " 0x%x-0x%x", low, high);
+			}
+			at = text.find("0x", static_cast<usz>(end - text.c_str()));
+		}
+		spu_log.success("SPU program '%s': accurate xfloat only for collision functions in%s", name, said.empty() ? " (no ranges read)" : said.c_str());
+	}
+
+
 	for (const accurate_xfloat_image& image : g_accurate_xfloat_images)
 	{
 		if (image.vaddr == vaddr && image.bytes.size() == size && !std::memcmp(image.bytes.data(), data, size))
@@ -159,6 +216,12 @@ void spu_note_program_image(std::string_view name, u32 vaddr, const void* data, 
 	const u8* bytes = static_cast<const u8*>(data);
 	g_accurate_xfloat_images.push_back({vaddr, std::vector<u8>(bytes, bytes + size)});
 	spu_log.success("SPU program '%s' (LS 0x%x, 0x%x bytes) is compiled with accurate xfloat", name, vaddr, size);
+}
+
+// The collision functions compiled accurate since the game booted (the trace's status)
+u32 spu_accurate_xfloat_functions()
+{
+	return g_accurate_xfloat_functions;
 }
 
 class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
@@ -1773,6 +1836,7 @@ public:
 		if (m_xfloat != xfloat_accuracy::accurate && needs_accurate_xfloat(func))
 		{
 			m_xfloat = xfloat_accuracy::accurate;
+			g_accurate_xfloat_functions++;
 			spu_log.notice("Function 0x%x (size %u) is compiled with accurate xfloat", func.entry_point, func.data.size());
 		}
 

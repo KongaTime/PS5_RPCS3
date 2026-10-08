@@ -86,6 +86,8 @@ const char* ps5_localized_string(localized_string_id id);
 // Emu/RSX/Overlays/overlay_utils.cpp
 std::u32string utf8_to_u32string(std::string_view utf8_string);
 
+u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
+
 namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
@@ -1086,7 +1088,7 @@ int run(const char* boot_path)
 					// The busiest of the PS3's threads over these five seconds
 					if (const std::string busiest = take_thread_loads(); !busiest.empty())
 					{
-						trace("busiest threads (share of the time each was running):%s", busiest);
+						trace("busiest threads (share of the time each was running):%s; collision functions compiled accurate: %u", busiest, spu_accurate_xfloat_functions());
 					}
 
 					std::string ppus;
