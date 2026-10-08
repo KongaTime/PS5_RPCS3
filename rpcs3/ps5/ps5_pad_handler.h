@@ -15,6 +15,11 @@ public:
 	// The title's pad reader, set once by rpcs3_ps5_run
 	static void set_source(void (*poll_pads)(rpcs3_ps5_pad pads[rpcs3_ps5_pad_players]));
 
+	// Player 1's right stick as last read (-1..1, y down), for the launcher to
+	// read from any thread: neither the pads' lock nor the pad thread, which a
+	// game's boot tears down while the launcher still draws
+	static void right_stick(f32& x, f32& y);
+
 	void init_config(cfg_pad* cfg) override;
 	std::vector<pad_list_entry> list_devices() override;
 	bool bindPadToDevice(std::shared_ptr<Pad> pad) override;

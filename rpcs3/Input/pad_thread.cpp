@@ -941,6 +941,15 @@ extern bool close_osk_from_ps_button();
 
 void pad_thread::open_home_menu()
 {
+#ifdef __PROSPERO__
+	// PS5: the pause menu is a game's; between games the launcher is up, and
+	// the combination does nothing there
+	if (Emu.GetBoot().empty())
+	{
+		return;
+	}
+#endif
+
 	// Check if the OSK is open and can be closed
 	if (!close_osk_from_ps_button())
 	{

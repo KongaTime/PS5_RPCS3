@@ -3,12 +3,17 @@
 #include "Emu/Io/pad_config.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 
 
 namespace
 {
 	void (*g_poll_pads)(rpcs3_ps5_pad pads[rpcs3_ps5_pad_players]) = nullptr;
+
+	// Player 1's right stick (ps5_pad_handler::right_stick)
+	std::atomic<f32> g_right_x = 0.f;
+	std::atomic<f32> g_right_y = 0.f;
 
 	// L2 and R2 are analog on both; past this they also count as pressed
 	constexpr float trigger_press = 0.25f;
@@ -34,6 +39,12 @@ ps5_pad_handler::ps5_pad_handler()
 void ps5_pad_handler::set_source(void (*poll_pads)(rpcs3_ps5_pad pads[rpcs3_ps5_pad_players]))
 {
 	g_poll_pads = poll_pads;
+}
+
+void ps5_pad_handler::right_stick(f32& x, f32& y)
+{
+	x = g_right_x.load(std::memory_order_relaxed);
+	y = g_right_y.load(std::memory_order_relaxed);
 }
 
 void ps5_pad_handler::init_config(cfg_pad* cfg)
@@ -122,6 +133,8 @@ void ps5_pad_handler::process()
 
 	rpcs3_ps5_pad state[rpcs3_ps5_pad_players]{};
 	g_poll_pads(state);
+	g_right_x.store(state[0].connected ? state[0].right_x : 0.f, std::memory_order_relaxed);
+	g_right_y.store(state[0].connected ? state[0].right_y : 0.f, std::memory_order_relaxed);
 
 	// The pads connected, which the pad thread reports as now_connect: RPCS3's
 	// native dialogs read no pad while it is 0 (overlays.cpp, run_input_loop),

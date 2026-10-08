@@ -9,6 +9,7 @@
 #include "stdafx.h"
 #include "ps5_launcher.h"
 #include "ps5_ui.h"
+#include "ps5_pad_handler.h"
 
 #include "Emu/RSX/Overlays/overlay_manager.h"
 #include "Emu/RSX/Overlays/BigPicture/overlay_big_picture.h"
@@ -16,7 +17,6 @@
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
 #include "Utilities/Config.h"
-#include "Input/pad_thread.h"
 #include "Utilities/File.h"
 #include "Utilities/StrUtil.h"
 #include "Utilities/Thread.h"
@@ -70,8 +70,10 @@ namespace rsx::overlays
 			// does not count as the game's
 			Emu.CallFromMainThread([path, title_id]()
 			{
+				launcher_log.notice("Booting '%s': the launcher's shell stops", title_id);
 				Emu.SetContinuousMode(true);
 				Emu.GracefulShutdown(false);
+				launcher_log.notice("Booting '%s': the shell stopped, the game boots", title_id);
 				g_big_picture_mode_active = true;
 
 				if (const game_boot_result result = Emu.BootGame(path, title_id); is_error(result))
@@ -2995,30 +2997,16 @@ namespace rsx::overlays
 			}
 		}
 
-		// The right stick, as it is now (read before taking this dialog's lock:
-		// the input thread takes the pads' lock, then this one)
+		// The right stick, as it is now: from the pad handler's own copy, not
+		// the pad thread's pads under their lock. A game's boot tears the pad
+		// thread down while this still runs, and the Library froze the app
+		// when a game was started from it (build 88, on my console)
 		f32 stick_x = 0.f, stick_y = 0.f;
 		if (m_tab == tab::library)
 		{
-			std::lock_guard pad_lock(pad::g_pad_mutex);
-			if (const auto handler = pad::get_pad_thread(true))
-			{
-				for (const auto& pad : handler->GetPads())
-				{
-					if (!pad || !pad->is_connected())
-					{
-						continue;
-					}
-					for (const AnalogStickExternal& stick : pad->m_sticks_external)
-					{
-						const f32 value = (static_cast<f32>(stick.m_value) - 128.f) / 127.f;
-						const f32 live = std::abs(value) < 0.12f ? 0.f : value;
-						if (stick.m_offset == CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_X) stick_x = live;
-						if (stick.m_offset == CELL_PAD_BTN_OFFSET_ANALOG_RIGHT_Y) stick_y = live;
-					}
-					break;
-				}
-			}
+			ps5_pad_handler::right_stick(stick_x, stick_y);
+			stick_x = std::abs(stick_x) < 0.12f ? 0.f : stick_x;
+			stick_y = std::abs(stick_y) < 0.12f ? 0.f : stick_y;
 		}
 
 		{

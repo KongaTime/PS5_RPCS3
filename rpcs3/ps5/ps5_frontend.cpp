@@ -392,6 +392,16 @@ namespace
 					msg->name, static_cast<int>(text.size()), text.data());
 			}
 
+			// The launcher's and the pause menu's own notices, always and outside
+			// the caps: they are few, and they say what was asked between games
+			// (a boot from the launcher after the first game said nothing)
+			const std::string_view channel(msg->name);
+			if (msg <= logs::level::notice && (channel == "Launcher" || channel == "PauseMenu"))
+			{
+				trace("%s%s: %s", prefix, msg->name, text.substr(0, std::min<usz>(text.find('\n'), 200)));
+				return;
+			}
+
 			// Notices only until the game runs: its own (a file opened, a thread
 			// made) filled the trace's 6000 within a second of the home menu's start
 			if (msg > (g_booted ? logs::level::warning : logs::level::notice))
