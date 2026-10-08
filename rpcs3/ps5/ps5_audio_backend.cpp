@@ -20,6 +20,10 @@
 
 LOG_CHANNEL(ps5_audio, "PS5Audio");
 
+// cellAudio.cpp: the audio periods the game was late for (its own stutter)
+extern atomic_t<u32> g_ps5_audio_periods_skipped;
+extern atomic_t<u32> g_ps5_audio_periods_partial;
+
 extern "C"
 {
 	int sceAudioOutInit(void);
@@ -172,7 +176,10 @@ void ps5_audio_backend::output_loop()
 		{
 			if (grains)
 			{
-				ps5_audio.notice("Port %d: %u grains in 10 s, %u short and %u empty from the emulator, longest wait %.1f ms", m_port, grains, short_reads, empty, longest_us / 1000.);
+				// And the game's side: periods of its audio skipped or mixed partly
+				// silent because it was late (RPCS3's sampling skip)
+				ps5_audio.notice("Port %d: %u grains in 10 s, %u short and %u empty from the emulator, longest wait %.1f ms; the game late for %u periods (skipped), %u more partly silent",
+					m_port, grains, short_reads, empty, longest_us / 1000., g_ps5_audio_periods_skipped.exchange(0), g_ps5_audio_periods_partial.exchange(0));
 			}
 			grains = short_reads = empty = 0;
 			longest_us = 0;

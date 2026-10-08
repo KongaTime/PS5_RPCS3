@@ -219,6 +219,14 @@ float* audio_ringbuffer::get_current_buffer() const
 	return get_buffer(cur_pos);
 }
 
+#ifdef __PROSPERO__
+// PS5: the audio periods the game was late for, for the audio output's line in
+// the trace (ps5_audio_backend.cpp): its stutter, as the game makes it. Taken
+// and cleared every ten seconds
+atomic_t<u32> g_ps5_audio_periods_skipped = 0; // every port untouched past the timeout: time advanced, nothing mixed
+atomic_t<u32> g_ps5_audio_periods_partial = 0; // some ports untouched past the timeout: mixed, silence for those
+#endif
+
 u64 audio_ringbuffer::get_enqueued_samples() const
 {
 	AUDIT(cfg.buffering_enabled);
@@ -1131,6 +1139,9 @@ void cell_audio_thread::operator()()
 					{
 						// There's no audio in any buffer, simply advance time and hope the game recovers
 						cellAudio.trace("advancing time: untouched=%u/%u (expected=%u), enqueued_buffers=%llu", untouched, active_ports, untouched_expected, enqueued_buffers);
+#ifdef __PROSPERO__
+						g_ps5_audio_periods_skipped++;
+#endif
 						advance(timestamp);
 						continue;
 					}
@@ -1140,6 +1151,9 @@ void cell_audio_thread::operator()()
 					// touched and untouched. Mix what is there instead: the untouched ports were memset, so
 					// they contribute silence, which is exactly what they hold.
 					cellAudio.trace("mixing partially untouched buffers: untouched=%u/%u, enqueued_buffers=%llu", untouched, active_ports, enqueued_buffers);
+#ifdef __PROSPERO__
+					g_ps5_audio_periods_partial++;
+#endif
 					waited_long_enough = true;
 				}
 				else

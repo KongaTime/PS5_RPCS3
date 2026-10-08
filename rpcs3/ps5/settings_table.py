@@ -51,6 +51,10 @@ PS5_EXTRA = [
      "Shows a frame made between each two of the game's, when the game runs slower than about 37 fps: "
      "motion looks about twice as smooth. The game itself runs no faster, each of its frames reaches "
      "the screen one refresh (17 ms) later, and fast motion, text and the HUD can shimmer or smear."),
+    ("TimeStretchingThreshold", "Audio", "DisableSamplingSkip", "Disable sampling skip",
+     "When a game is late with its sound, the emulator normally skips that bit of sound, which is heard "
+     "as stutter. On, it waits for the game instead: with time stretching on, the sound is stretched "
+     "over the wait rather than cut. Can slow a game that is late with its sound often."),
 ]
 
 # Labels clearer alone than under the dialog's shared group boxes
