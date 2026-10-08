@@ -92,8 +92,18 @@ namespace
 	shared_mutex g_accurate_xfloat_lock;
 	std::vector<accurate_xfloat_image> g_accurate_xfloat_images;
 
+	// A test switch: with the file collision-test-off in the config folder
+	// (/app0/rpcs3/) when a game boots, its collision programs keep the
+	// configured accuracy, to measure what accurate collision costs
+	atomic_t<bool> g_accurate_xfloat_off = false;
+
 	bool needs_accurate_xfloat(const spu_program& func)
 	{
+		if (g_accurate_xfloat_off)
+		{
+			return false;
+		}
+
 		reader_lock lock(g_accurate_xfloat_lock);
 		const u32 start = func.lower_bound;
 		const u32 end = start + ::size32(func.data) * 4;
@@ -129,6 +139,15 @@ void spu_note_program_image(std::string_view name, u32 vaddr, const void* data, 
 	{
 		return;
 	}
+	if (fs::is_file(fs::get_config_dir() + "collision-test-off"))
+	{
+		if (!g_accurate_xfloat_off.exchange(true))
+		{
+			spu_log.success("SPU program '%s': accurate xfloat off for this run (collision-test-off)", name);
+		}
+		return;
+	}
+	g_accurate_xfloat_off = false;
 	std::lock_guard lock(g_accurate_xfloat_lock);
 	for (const accurate_xfloat_image& image : g_accurate_xfloat_images)
 	{
