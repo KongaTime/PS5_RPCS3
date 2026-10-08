@@ -10,7 +10,8 @@
 // tabs, as the launcher's Game settings has them. A change is the game's own
 // (its custom config, written as the menu closes), and a setting the
 // emulator reads as it runs takes effect at once; the others from the
-// game's next start.
+// game's next start. The emulation runs on under the menu, and the game
+// pauses itself, as a PS3 game does under the PS3's own menu.
 
 #include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/Cell/ErrorCodes.h"
@@ -89,7 +90,6 @@ namespace rsx::overlays
 		bool m_closing = false;
 		bool m_closed = false;
 		action m_then = action::resume;
-		bool m_paused = false;
 	};
 
 	// Opens the pause menu over the running game (pad_thread::open_home_menu);

@@ -315,7 +315,6 @@ namespace rsx::overlays
 
 		close(true, true);
 
-		const bool paused = m_paused;
 		switch (m_then)
 		{
 		case action::restart:
@@ -331,25 +330,11 @@ namespace rsx::overlays
 			pause_log.notice("Quitting to the library");
 			Emu.CallFromMainThread([]()
 			{
-				// The game is asked to end, which it cannot while paused
-				if (Emu.IsPaused())
-				{
-					Emu.Resume();
-				}
 				Emu.GracefulShutdown(true, true);
 			});
 			break;
 		default:
-			if (paused)
-			{
-				Emu.CallFromMainThread([]()
-				{
-					if (Emu.IsPaused())
-					{
-						Emu.Resume();
-					}
-				});
-			}
+			pause_log.notice("Back to the game");
 			break;
 		}
 	}
@@ -684,20 +669,20 @@ namespace rsx::overlays
 		this->on_close = std::move(on_close);
 		visible = true;
 
+		// The emulation runs on under the menu, as a PS3's does under its own:
+		// the game hears that the system menu opened (send_open_home_menu_cmds)
+		// and pauses itself, GTA IV into its own pause menu. Pausing the
+		// emulator too froze the app on my console (build 91): the menu opened,
+		// and nothing drew or answered after
 		const auto notify = std::make_shared<atomic_t<u32>>(0);
 		auto& overlayman = g_fxo->get<display_manager>();
-		overlayman.attach_thread_input(uid, "PS5 pause menu", [notify]() { *notify = true; notify->notify_one(); });
-
-		// The game stops while the menu is up; RSX draws the menu meanwhile
-		Emu.BlockingCallFromMainThread([]()
+		overlayman.attach_thread_input(uid, "PS5 pause menu", [notify]()
 		{
-			if (Emu.IsRunning())
-			{
-				Emu.Pause(false, false);
-			}
+			pause_log.notice("Reading the controller");
+			*notify = true;
+			notify->notify_one();
 		});
-		m_paused = Emu.IsPaused();
-		pause_log.notice("Opened over '%s' (%s), the game %s", m_title, m_serial, m_paused ? "paused" : "running");
+		pause_log.notice("Opened over '%s' (%s)", m_title, m_serial);
 
 		while (!Emu.IsStopped() && !*notify)
 		{
