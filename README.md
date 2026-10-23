@@ -7,7 +7,7 @@ homebrew title: a frontend without Qt, the console's memory, JIT and thread rule
 through my platform layer, the display, pad and audio. The changes are behind
 `__PROSPERO__` or in files of their own, so upstream merges stay clean.
 
-- **The title** that builds it is [PS5_RPCS3Title](https://github.com/KongaTime/PS5_RPCS3Title)
+- **The title** that builds it is [Kong3](https://github.com/KongaTime/Kong3) (it was PS5_RPCS3Title)
   (`PPSA99200`), made from PS5_VulkanTemplate. It pins this fork by revision.
 - **Keeping in step**: `main` is the only branch. I merge `upstream/master` into it
   regularly and never rebase or force-push.
