@@ -8,11 +8,24 @@
 
 namespace rsx
 {
+#ifdef __PROSPERO__
+	extern atomic_t<u32> g_ps5_watched_label;
+	extern atomic_t<u32> g_ps5_watched_label_rsx_writes;
+	extern u32 g_ps5_watched_label_values[8];
+#endif
+
 	namespace util
 	{
 		template <bool FlushDMA, bool FlushPipe>
 		static void write_gcm_label(context* ctx, u32 type, u32 address, u32 data)
 		{
+#ifdef __PROSPERO__
+			if (address == g_ps5_watched_label)
+			{
+				// The last 8 values, the newest at the count's index
+				g_ps5_watched_label_values[g_ps5_watched_label_rsx_writes++ % 8] = data;
+			}
+#endif
 			// Ensure atomic seq-cst memory ordering for FIFO GET updates
 			atomic_fence_seq_cst();
 

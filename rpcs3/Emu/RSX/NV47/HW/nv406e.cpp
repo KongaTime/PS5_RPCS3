@@ -9,6 +9,27 @@
 
 namespace rsx
 {
+#ifdef __PROSPERO__
+	// PS5: the label a wait last timed out on, and the RSX's own writes to it
+	// (nv47_sync.hpp): a write from the RSX tells its release from the game's
+	// PPU or SPU (Army of Two: The 40th Day's label 254, build 174)
+	atomic_t<u32> g_ps5_watched_label = 0;
+	atomic_t<u32> g_ps5_watched_label_rsx_writes = 0;
+	u32 g_ps5_watched_label_values[8]{};
+
+	// The values the RSX last wrote to the watched label, oldest first
+	static std::string ps5_watched_label_history()
+	{
+		const u32 count = g_ps5_watched_label_rsx_writes;
+		std::string out;
+		for (u32 i = count > 8 ? count - 8 : 0; i < count; i++)
+		{
+			fmt::append(out, "%s0x%x", out.empty() ? "" : " ", g_ps5_watched_label_values[i % 8]);
+		}
+		return out.empty() ? std::string("none") : out;
+	}
+#endif
+
 	namespace nv406e
 	{
 		void set_reference(context* ctx, u32 /*reg*/, u32 arg)
@@ -56,6 +77,11 @@ namespace rsx
 
 			u64 start = get_system_time();
 			u64 last_check_val = start;
+#ifdef __PROSPERO__
+			const u32 sema_at_start = sema;
+			u32 sema_changes = 0;
+			u32 sema_last = sema_at_start;
+#endif
 
 			while (sema != arg)
 			{
@@ -82,7 +108,14 @@ namespace rsx
 					if ((current - start) > tdr)
 					{
 						// If longer than driver timeout force exit
+#ifdef __PROSPERO__
+						rsx_log.error("nv406e::semaphore_acquire has timed out. semaphore_address=0x%X (label %u; waited for 0x%x, held 0x%x at the start, 0x%x now, changed %u times; the RSX wrote it %u times since the last: %s)",
+							addr, (addr - RSX(ctx)->label_addr) / 0x10, arg, sema_at_start, u32{sema}, sema_changes, u32{g_ps5_watched_label_rsx_writes}, ps5_watched_label_history());
+						g_ps5_watched_label_rsx_writes = 0;
+						g_ps5_watched_label = addr;
+#else
 						rsx_log.error("nv406e::semaphore_acquire has timed out. semaphore_address=0x%X", addr);
+#endif
 						break;
 					}
 				}
@@ -95,12 +128,30 @@ namespace rsx
 				}
 
 				RSX(ctx)->on_semaphore_acquire_wait();
+#ifdef __PROSPERO__
+				if (const u32 now = sema; now != sema_last)
+				{
+					sema_changes++;
+					sema_last = now;
+				}
+#endif
 
 				// Wait until the value changes or until 100us pass.
 				utils::spin_on_cacheline_once(atomic_sema, sema, 100);
 			}
 
 			RSX(ctx)->fifo_wake_delay();
+#ifdef __PROSPERO__
+			// Waits long enough to be seen as a stutter (longer than a frame at 10 fps:
+			// a game's own 30 fps pacing waits 33 ms each frame), and what released them
+			if (const u64 waited = get_system_time() - start; waited > 100'000 && sema == arg)
+			{
+				rsx_log.warning("PS5: semaphore_acquire at 0x%X (label %u) waited %u ms for 0x%x, from 0x%x; the RSX wrote it %u times since the last: %s",
+					addr, (addr - RSX(ctx)->label_addr) / 0x10, waited / 1000, arg, sema_at_start, u32{g_ps5_watched_label_rsx_writes}, ps5_watched_label_history());
+				g_ps5_watched_label_rsx_writes = 0;
+				g_ps5_watched_label = addr;
+			}
+#endif
 			RSX(ctx)->performance_counters.idle_time += (get_system_time() - start);
 		}
 
