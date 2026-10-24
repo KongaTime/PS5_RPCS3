@@ -513,8 +513,9 @@ namespace rsx::overlays::ps5ui
 		// ranges better in a few steps
 		static const std::map<std::string_view, std::vector<std::string>> offered
 		{
-			// The shader interpreter froze the console
-			{"Shader Mode", {"Async Recompiler (multi-threaded)", "Legacy Recompiler (single-threaded)"}},
+			// The shader interpreter alone froze the console; alongside the
+			// recompiler, it is offered to try (it froze the XMB at 688c9aa)
+			{"Shader Mode", {"Async Recompiler (multi-threaded)", "Async Recompiler with Shader Interpreter", "Legacy Recompiler (single-threaded)"}},
 			{"Anisotropic Filter Override", {"0", "2", "4", "8", "16"}},
 			{"Resolution Scale", {"50", "75", "100", "125", "150", "200", "250", "300"}},
 			// The sizes RPCS3's guides give, 512x512 for Army of Two: The 40th Day
@@ -742,10 +743,14 @@ namespace rsx::overlays::ps5ui
 	}
 
 	// A setting's default as this title has it: the shader interpreter, the
-	// emulator's own default, froze the console and is not offered
+	// emulator's own default, froze the console and is only offered to try
 	std::string usable_default(const cfg::_base& setting, const std::vector<std::string>& options)
 	{
 		const std::string value = setting.def_to_string();
+		if (setting.get_name() == "Shader Mode")
+		{
+			return "Async Recompiler (multi-threaded)";
+		}
 		if (std::find(options.begin(), options.end(), value) != options.end())
 		{
 			return value;

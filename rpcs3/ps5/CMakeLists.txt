@@ -33,6 +33,8 @@ add_library(rpcs3_ps5 STATIC
     ../Input/product_info.cpp
     ../Input/ps_move_config.cpp
     ../Input/ps_move_tracker.cpp
+    ../Input/blob_detector.cpp
+    ps5_no_wiimote.cpp
     ../rpcs3_version.cpp
 )
 # RPCS3's overlay images (bin/Icons/ui), built in for the frontend to write to

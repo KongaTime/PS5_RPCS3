@@ -1319,16 +1319,26 @@ int run(const char* boot_path)
 		trace("config: Vulkan renderer, no GDB server");
 	}
 
-	// No shader interpreter: the home menu's XMB on my console (688c9aa) froze
-	// again and again under it and the title then ended with a system error
-	// and memory to spare, as after a GPU hang. Shaders are compiled for each
-	// program instead, off the render thread; objects wait for theirs
-	if (g_cfg.video.shadermode == shader_mode::async_with_interpreter || g_cfg.video.shadermode == shader_mode::interpreter_only)
+	// No shader interpreter by default: the home menu's XMB on my console
+	// (688c9aa) froze again and again under it and the title then ended with a
+	// system error and memory to spare, as after a GPU hang. Shaders are
+	// compiled for each program instead, off the render thread; objects wait
+	// for theirs. The interpreter alongside (drawing while a shader compiles,
+	// less stutter) is chosen in the settings, once this default is set: the
+	// marker says it was. The interpreter alone is never offered
+	const std::string shader_default_marker = fs::get_config_dir() + "ps5-shader-mode-default";
+	const bool shader_default_set = fs::is_file(shader_default_marker);
+	if (g_cfg.video.shadermode == shader_mode::interpreter_only ||
+		(!shader_default_set && g_cfg.video.shadermode == shader_mode::async_with_interpreter))
 	{
 		g_cfg.video.shadermode.set(shader_mode::async_recompiler);
 		Emulator::SaveSettings(g_cfg.to_string(), "");
-		trace("config: shaders compiled asynchronously, without the shader interpreter");
 	}
+	if (!shader_default_set)
+	{
+		fs::write_file(shader_default_marker, fs::rewrite, std::string("Shader Mode's default was set: the settings' choice is kept\n"));
+	}
+	trace("config: shader mode %s", g_cfg.video.shadermode.to_string());
 
 	// Nothing named to boot: RPCS3's Big Picture Mode, the game library on the
 	// display, over the games in /app0/rpcs3/games/; "vsh" named: the PS3's

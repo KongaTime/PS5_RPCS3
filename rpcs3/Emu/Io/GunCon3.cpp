@@ -217,6 +217,8 @@ bool usb_device_guncon3::handle_wiimote(GunCon3_data& gc)
 		return false;
 
 	auto* wm = wiimote_handler::get_instance();
+	if (!wm)
+		return false;
 	auto states = wm->get_states();
 
 	// Determine which Wiimote to use based on our ordinal position among all GunCons
