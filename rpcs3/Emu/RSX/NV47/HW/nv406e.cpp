@@ -153,6 +153,9 @@ namespace rsx
 			}
 #endif
 			RSX(ctx)->performance_counters.idle_time += (get_system_time() - start);
+#ifdef __PROSPERO__
+			RSX(ctx)->performance_counters.ps5_wait_semaphore += (get_system_time() - start);
+#endif
 		}
 
 		void semaphore_release(context* ctx, u32 reg, u32 arg)

@@ -14,7 +14,9 @@
 #include <cerrno>
 #include <bit>
 #include <chrono>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 // The PS5 libre layer's affinity calls (libre/threads.h), which take a set of
 // any size: libc's refuses FreeBSD's 32-byte cpuset_t (ERANGE); and the kernel's
@@ -390,7 +392,101 @@ s32 ps5_cpu_take_own_core(std::string_view thread)
 	return cpu;
 }
 
+std::string ps5_cpu_own_core_state();
+
+namespace
+{
+	std::atomic<s32> g_spread_on[64]{}; // the spread SPU threads on each CPU
+
+	// The CPUs in the order spread SPUs take them: one of each core, from the
+	// last, then their siblings; never the core of CPU 0
+	std::vector<s32> spread_order()
+	{
+		const u64 cpus = g_cpus.load();
+		const s32 first_core_other = g_sibling[0];
+		std::vector<s32> order, siblings;
+		for (s32 cpu = 63; cpu >= 0; cpu--)
+		{
+			if (!(cpus >> cpu & 1) || cpu == 0 || cpu == first_core_other)
+			{
+				continue;
+			}
+			const s32 sibling = g_sibling[cpu];
+			if (sibling < 0)
+			{
+				order.push_back(cpu);
+			}
+			else if (sibling < cpu)
+			{
+				order.push_back(sibling);
+				siblings.push_back(cpu);
+			}
+		}
+		order.insert(order.end(), siblings.begin(), siblings.end());
+		return order;
+	}
+
+	struct spread_slot
+	{
+		s32 cpu = -1;
+		bool asked = false;
+
+		~spread_slot()
+		{
+			if (cpu >= 0)
+			{
+				g_spread_on[cpu]--;
+			}
+		}
+	};
+
+	thread_local spread_slot g_spread_slot;
+}
+
+s32 ps5_cpu_spread_spu()
+{
+	if (g_spread_slot.asked)
+	{
+		return -1;
+	}
+	g_spread_slot.asked = true;
+	if (!g_cpus.load() || !fs::is_file("/app0/rpcs3-spu-spread.txt"))
+	{
+		return -1;
+	}
+	static const std::vector<s32> order = spread_order();
+	static std::mutex mutex;
+	std::lock_guard lock(mutex);
+	s32 best = -1;
+	for (const s32 cpu : order)
+	{
+		if (best < 0 || g_spread_on[cpu] < g_spread_on[best])
+		{
+			best = cpu;
+		}
+	}
+	if (best >= 0)
+	{
+		g_spread_on[best]++;
+		g_spread_slot.cpu = best;
+	}
+	return best;
+}
+
 std::string ps5_cpu_own_core_text()
+{
+	std::string spread;
+	for (s32 cpu = 0; cpu < 64; cpu++)
+	{
+		if (const s32 count = g_spread_on[cpu])
+		{
+			fmt::append(spread, "%s%d%s", spread.empty() ? "; SPUs spread on CPUs " : " ", cpu, count > 1 ? fmt::format("x%d", count) : "");
+		}
+	}
+	return ps5_cpu_own_core_state() + spread;
+}
+
+std::string ps5_cpu_own_core_state()
 {
 	if (!g_cfg.core.spu_own_core)
 	{

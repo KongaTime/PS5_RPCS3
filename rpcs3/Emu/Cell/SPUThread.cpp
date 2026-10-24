@@ -66,6 +66,7 @@ u32 ps5_spu_slot(u32 id)
 	return id % 64;
 }
 s32 ps5_cpu_take_own_core(std::string_view thread); // rpcs3/ps5/ps5_cpus.cpp
+s32 ps5_cpu_spread_spu();
 s32 ps5_current_cpu();
 #endif
 
@@ -1533,8 +1534,17 @@ void spu_thread::cpu_task()
 			{
 				thread_ctrl::set_thread_affinity_mask(1ull << cpu);
 				spu_log.success("'%s' runs alone on CPU %d (now on %d); the other threads keep off its core", *name, cpu, ps5_current_cpu());
+				ps5_cpu_spread_spu(); // asked, so not spread too
 			}
 		}
+	}
+
+	// And each SPU thread on a CPU of its own, where the trial file asks
+	if (const s32 cpu = ps5_cpu_spread_spu(); cpu >= 0)
+	{
+		thread_ctrl::set_thread_affinity_mask(1ull << cpu);
+		const auto name = spu_tname.load();
+		spu_log.notice("'%s' stays on CPU %d (SPUs spread)", name ? *name : std::string("SPU"), cpu);
 	}
 #endif
 

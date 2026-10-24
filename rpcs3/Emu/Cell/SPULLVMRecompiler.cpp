@@ -897,6 +897,7 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 
 	// Patchpoint unique id
 	u32 m_pp_id = 0;
+	bool m_ps5_log_ir = false; // PS5: this function's IR and object written out (compile)
 
 	// Next opcode
 	u32 m_next_op = 0;
@@ -2606,8 +2607,35 @@ public:
 			}
 		}
 
+#ifdef __PROSPERO__
+		// PS5: one function's disassembly, IR and object written out, as SPU
+		// Debug writes every function's (a boot of GTA IV with it on compiled 669
+		// of its 4879 programs in nine minutes): the function holding the word
+		// that /app0/rpcs3-spu-ir.txt names ("36408 40800a0b": a local storage
+		// address and the instruction there, in hex)
+		m_ps5_log_ir = false;
+		{
+			static const std::pair<u32, u32> s_wanted = []() -> std::pair<u32, u32>
+			{
+				// Without the file, none (to_string of a file not opened throws)
+				const fs::file file("/app0/rpcs3-spu-ir.txt");
+				const std::string text = file ? file.to_string() : std::string();
+				u32 addr = 0, word = 0;
+				return std::sscanf(text.c_str(), "%x %x", &addr, &word) == 2 ? std::pair<u32, u32>{addr, word} : std::pair<u32, u32>{umax, 0};
+			}();
+			if (const u32 addr = s_wanted.first; addr != umax && addr >= func.lower_bound && (addr - func.lower_bound) / 4 < func.data.size())
+			{
+				m_ps5_log_ir = std::bit_cast<be_t<u32>>(func.data[(addr - func.lower_bound) / 4]) == s_wanted.second;
+			}
+			if (m_ps5_log_ir)
+			{
+				spu_log.success("PS5: writing out the IR and object of %s (0x%x, holding 0x%x at 0x%x)", m_hash, func.entry_point, s_wanted.second, s_wanted.first);
+			}
+		}
+#endif
+
 		// The disassembly is expensive, only create it if it's going to be logged
-		if (g_cfg.core.spu_debug || to_log_func)
+		if (g_cfg.core.spu_debug || to_log_func || m_ps5_log_ir)
 		{
 			this->dump(func, function_log);
 		}
@@ -4907,6 +4935,56 @@ public:
 			}
 		}
 
+#if defined(__PROSPERO__) && defined(ARCH_X64)
+		// PS5: an element inserted at an index known only at run time (an SPU's
+		// scalar store: CWD's mask, and SHUFB with it, for an address in a
+		// register) as a compare and blend, not through the stack. LLVM stores the
+		// vector, stores the element over it and loads the vector back, and the
+		// load waits for both stores (store forwarding fails): in GTA IV's audio
+		// filter (LS 0x36408, 27% of the busiest SPU's time in busy streets, build
+		// 181), twice for every value, each on the loop's chain
+		for (auto& f : *_module)
+		{
+			std::vector<llvm::InsertElementInst*> inserts;
+			for (auto& bb : f)
+			{
+				for (auto& inst : bb)
+				{
+					if (auto ins = llvm::dyn_cast<llvm::InsertElementInst>(&inst); ins && !llvm::isa<llvm::Constant>(ins->getOperand(2)))
+					{
+						inserts.push_back(ins);
+					}
+				}
+			}
+			for (auto ins : inserts)
+			{
+				const auto vt = llvm::dyn_cast<llvm::FixedVectorType>(ins->getType());
+				if (!vt)
+				{
+					continue;
+				}
+				const u32 lanes = vt->getNumElements();
+				const u32 bits = vt->getElementType()->getPrimitiveSizeInBits().getFixedValue();
+				if (bits != 8 && bits != 16 && bits != 32 && bits != 64)
+				{
+					continue;
+				}
+				llvm::IRBuilder<> b(ins);
+				const auto lane_type = b.getIntNTy(bits);
+				std::vector<llvm::Constant*> numbers;
+				for (u32 i = 0; i < lanes; i++)
+				{
+					numbers.push_back(llvm::ConstantInt::get(lane_type, i));
+				}
+				const auto index = b.CreateVectorSplat(lanes, b.CreateZExtOrTrunc(ins->getOperand(2), lane_type));
+				const auto mask = b.CreateICmpEQ(index, llvm::ConstantVector::get(numbers));
+				const auto blend = b.CreateSelect(mask, b.CreateVectorSplat(lanes, ins->getOperand(1)), ins->getOperand(0));
+				ins->replaceAllUsesWith(blend);
+				ins->eraseFromParent();
+			}
+		}
+#endif
+
 		if (m_test_state->use_empty())
 		{
 			m_test_state->eraseFromParent();
@@ -4969,7 +5047,7 @@ public:
 			fmt::throw_exception("Compilation failed");
 		}
 
-		if (g_cfg.core.spu_debug)
+		if (g_cfg.core.spu_debug || m_ps5_log_ir)
 		{
 			print_ir();
 		}
@@ -5034,7 +5112,7 @@ public:
 				m_jit.fin();
 			}
 #else
-			if (g_cfg.core.spu_debug)
+			if (g_cfg.core.spu_debug || m_ps5_log_ir)
 			{
 				// Testing only
 				m_jit.add(std::move(_module), m_spurt->get_cache_path() + "llvm/");
@@ -5077,10 +5155,14 @@ public:
 
 		add_loc->compiled.notify_all();
 
-		if (g_cfg.core.spu_debug)
+		if (g_cfg.core.spu_debug || m_ps5_log_ir)
 		{
 			out.flush();
 			fs::write_file(m_spurt->get_cache_path() + "spu-ir.log", fs::create + fs::write + fs::append, llvm_log);
+		}
+		if (m_ps5_log_ir)
+		{
+			fs::write_file(m_spurt->get_cache_path() + "spu.log", fs::create + fs::write + fs::append, function_log);
 		}
 
 #if defined(__APPLE__)

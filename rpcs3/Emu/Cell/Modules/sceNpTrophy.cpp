@@ -778,6 +778,12 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 			const auto queued = std::make_shared<atomic_t<u32>>(0);
 
 			u32 total_events = 0;
+#ifdef __PROSPERO__
+			// PS5: how the events went (Army of Two: The 40th Day stood still 13.5 s
+			// in this call, build 178: 2.2 s of it here, the rest in its callback)
+			const u64 events_start = get_system_time();
+			u32 events_waited_out = 0;
+#endif
 
 			for (auto status : statuses)
 			{
@@ -828,8 +834,15 @@ error_code sceNpTrophyRegisterContext(ppu_thread& ppu, u32 context, u32 handle, 
 							return {};
 						}
 					}
+#ifdef __PROSPERO__
+					events_waited_out += *queued != 0;
+#endif
 				}
 			}
+#ifdef __PROSPERO__
+			sceNpTrophy.notice("sceNpTrophyRegisterContext(): %u events in %u ms, %u of them not taken in time", total_events,
+				static_cast<u32>((get_system_time() - events_start) / 1000), events_waited_out);
+#endif
 		}
 	}
 

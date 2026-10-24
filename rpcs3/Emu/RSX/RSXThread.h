@@ -206,6 +206,9 @@ namespace rsx
 		{
 			atomic_t<u64> idle_time{ 0 };  // Time spent idling in microseconds
 			atomic_t<u64> ps5_idle_total{ 0 }; // PS5 fork: the same, never reset (get_load resets idle_time), for the trace's RSX load
+			atomic_t<u64> ps5_wait_commands{ 0 }; // PS5 fork: of that, waiting for the game's commands (an empty or spinning FIFO)
+			atomic_t<u64> ps5_wait_limit{ 0 };    // PS5 fork: and in the frame limiter
+			atomic_t<u64> ps5_wait_semaphore{ 0 }; // PS5 fork: and, never counted idle above, in semaphore acquires (nv406e)
 			u64 last_update_timestamp = 0; // Timestamp of last load update
 			u64 FIFO_idle_timestamp = 0;   // Timestamp of when FIFO queue becomes idle
 			FIFO::state state = FIFO::state::running;

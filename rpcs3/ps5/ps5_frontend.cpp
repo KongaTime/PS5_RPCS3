@@ -170,6 +170,7 @@ namespace
 		u32 samples = 0;
 		u32 spu_index = umax;          // an SPU's slot, for its GETLLAR counts (ps5_spu_slot)
 		std::map<u32, u32> spu_pcs;    // where an SPU was when sampled running, by local storage address
+		std::map<std::string, u32> waits; // what a PPU waited in when sampled not running: the call it was in
 	};
 
 	// The PS3's threads are read on the main thread, where a stop and the
@@ -242,6 +243,17 @@ namespace
 		idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
 		{
 			sample(0, id, ppu, [&] { return "PPU " + ppu.get_name(); });
+			// What it waits in: the threads that hand work to each other, and which
+			// hand-off holds up a frame (GTA IV's busy streets: no thread over 80%
+			// busy at 22 fps, build 180)
+			if (!is_running(ppu))
+			{
+				sampled_load& load = g_loads[id];
+				if (load.waits.size() < 32)
+				{
+					load.waits[ppu.current_function ? ppu.current_function : "(no call)"]++;
+				}
+			}
 		});
 		idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
 		{
@@ -373,6 +385,18 @@ namespace
 					{
 						fmt::append(name, ", %u %.0f%%", cpus[1].second, 100.0 * cpus[1].first / polls);
 					}
+				}
+				name += ")";
+			}
+			// A PPU's commonest waits, as shares of all its samples
+			if (load.spu_index == umax && share >= 5.0 && !load.waits.empty())
+			{
+				std::vector<std::pair<std::string, u32>> waits(load.waits.begin(), load.waits.end());
+				std::sort(waits.begin(), waits.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+				fmt::append(name, " (waiting in");
+				for (usz i = 0; i < waits.size() && i < 3; i++)
+				{
+					fmt::append(name, "%s %s %.0f%%", i ? "," : "", waits[i].first, 100.0 * waits[i].second / load.samples);
 				}
 				name += ")";
 			}
@@ -1489,6 +1513,7 @@ int run(const char* boot_path)
 						atomic_t<u32> done = 0;
 						u64 flips = 0;
 						u64 rsx_idle_us = 0; // the RSX thread's idle time since the boot (RSXThread.h)
+						u64 rsx_wait_us[3]{}; // of that and beside it, by cause (RSXThread.h)
 						u32 count = 0;
 						std::string ppus;
 					};
@@ -1501,6 +1526,9 @@ int run(const char* boot_path)
 							{
 								view->flips = render->int_flip_index;
 								view->rsx_idle_us = render->performance_counters.ps5_idle_total.load();
+								view->rsx_wait_us[0] = render->performance_counters.ps5_wait_commands.load();
+								view->rsx_wait_us[1] = render->performance_counters.ps5_wait_semaphore.load();
+								view->rsx_wait_us[2] = render->performance_counters.ps5_wait_limit.load();
 							}
 							view->count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 							{
@@ -1540,10 +1568,23 @@ int run(const char* boot_path)
 							frames += cpus[cpu].first;
 						}
 						std::sort(std::begin(cpus), std::end(cpus), [](const auto& a, const auto& b) { return a.first > b.first; });
+						// And its waits by cause: the game's commands, a semaphore, the frame
+						// limiter; the rest it worked (or waited for the GPU)
+						static u64 s_last_waits[3]{};
+						static u64 s_last_waits_us = 0;
+						f64 waited[3]{};
+						for (u32 i = 0; i < 3; i++)
+						{
+							const u64 total = seen ? view->rsx_wait_us[i] : s_last_waits[i];
+							waited[i] = s_last_waits_us && total >= s_last_waits[i] && flips_us > s_last_waits_us ? 100.0 * static_cast<f64>(total - s_last_waits[i]) / static_cast<f64>(flips_us - s_last_waits_us) : 0.0;
+							s_last_waits[i] = total;
+						}
+						s_last_waits_us = flips_us;
 						if (frames && rsx_busy > 0.0)
 						{
-							trace_logged("RSX thread: busy %.0f%% of the time (frames ended on CPU %u %.0f%%%s)", rsx_busy, cpus[0].second, 100.0 * cpus[0].first / frames,
-								cpus[1].first ? fmt::format(", %u %.0f%%", cpus[1].second, 100.0 * cpus[1].first / frames) : std::string());
+							trace_logged("RSX thread: busy %.0f%% of the time (frames ended on CPU %u %.0f%%%s); waiting for the game's commands %.0f%%, in semaphores %.0f%%, in the frame limiter %.0f%%; working %.0f%%", rsx_busy, cpus[0].second, 100.0 * cpus[0].first / frames,
+								cpus[1].first ? fmt::format(", %u %.0f%%", cpus[1].second, 100.0 * cpus[1].first / frames) : std::string(), waited[0], waited[1], waited[2],
+								std::max(0.0, 100.0 - waited[0] - waited[1] - waited[2]));
 						}
 					}
 					// Whose the heap is: GTA V ran the title out of memory in 20

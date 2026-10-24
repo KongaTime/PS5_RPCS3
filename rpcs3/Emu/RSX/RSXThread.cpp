@@ -3689,6 +3689,7 @@ namespace rsx
 					lv2_obj::wait_timeout(delay_us, nullptr, false);
 					performance_counters.idle_time += delay_us;
 					performance_counters.ps5_idle_total += delay_us; // PS5 fork
+					performance_counters.ps5_wait_limit += delay_us; // PS5 fork
 				}
 			}
 

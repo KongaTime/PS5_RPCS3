@@ -30,7 +30,16 @@ u64 ps5_cpu_kept_mask();
 // once for each emulation, -1 when the setting is off or the core is taken
 s32 ps5_cpu_take_own_core(std::string_view thread);
 
-// The setting's state for the status lines: off, or the core and its SPU
+// With /app0/rpcs3-spu-spread.txt there: the CPU the calling SPU thread is to
+// stay on, one CPU a thread, a core each first (the CPUs 0 and 1 left to the
+// PPU, the RSX and the rest), the CPU given back when the thread ends; once
+// for each thread, -1 after the first call or without the file. The kernel
+// alone put three of Army of Two: The 40th Day's four busy SPUs on CPU 1
+// (build 176: 79%, 47% and 34% of their time)
+s32 ps5_cpu_spread_spu();
+
+// The setting's state for the status lines: off, or the core and its SPU,
+// and the spread SPUs' CPUs
 std::string ps5_cpu_own_core_text();
 
 // The CPU the calling thread runs on now
