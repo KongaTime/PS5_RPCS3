@@ -806,7 +806,10 @@ namespace
 						*wake_up = true;
 						wake_up->notify_one();
 					}
-					if (stop_pending.exchange(false) && Emu.IsStopped())
+					// Fully stopped: a game that failed to boot while the shell
+					// had just stopped is still stopping, and returns to the
+					// launcher (MW2 without the system software ended the title)
+					if (stop_pending.exchange(false) && Emu.IsStopped(true))
 					{
 						quit = true;
 					}
@@ -1221,8 +1224,39 @@ int run(const char* boot_path)
 
 	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
 	// as the desktop's File > Install Firmware does (ps5_firmware.cpp)
-	const std::string pup_path = "/app0/PS3UPDAT.PUP";
-	if (fs::is_file(pup_path))
+	// Found by name in any case, in the title's folder or its rpcs3/ (a PC's
+	// copy can arrive as ps3updat.pup, or PS3UPDAT.PUP.PUP with Windows
+	// hiding extensions: a player's said it was there and nothing installed)
+	std::string pup_path;
+	for (const std::string dir : {"/app0/", "/app0/rpcs3/"})
+	{
+		for (const fs::dir_entry& entry : fs::dir(dir))
+		{
+			const std::string lower = fmt::to_lower(entry.name);
+			if (!entry.is_directory && lower.starts_with("ps3updat") && lower.ends_with(".pup") && pup_path.empty())
+			{
+				pup_path = dir + entry.name;
+			}
+		}
+	}
+	if (pup_path.empty() && utils::get_firmware_version().empty())
+	{
+		// What is there instead, for the trace a player sends
+		std::string listing;
+		for (const std::string dir : {"/app0/", "/app0/rpcs3/"})
+		{
+			fmt::append(listing, " %s:", dir);
+			for (const fs::dir_entry& entry : fs::dir(dir))
+			{
+				if (entry.name != "." && entry.name != ".." && listing.size() < 1500)
+				{
+					fmt::append(listing, " %s%s", entry.name, entry.is_directory ? "/" : fmt::format(" (%u MiB)", entry.size >> 20));
+				}
+			}
+		}
+		trace("firmware: no PS3UPDAT.PUP in /app0/ or /app0/rpcs3/; they hold:%s", listing);
+	}
+	if (!pup_path.empty())
 	{
 		trace("firmware: installing from %s", pup_path);
 		switch (ps5_install_firmware(pup_path))

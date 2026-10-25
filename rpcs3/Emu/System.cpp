@@ -4293,9 +4293,13 @@ void Emulator::Kill(bool allow_autoexit, bool savestate, savestate_stage* save_s
 
 			if (return_to_big_picture_mode)
 			{
-				ensure(!after_kill_callback);  
-				after_kill_callback = [this]()
+				// A failed boot's own cleanup (BootGame's restore_on_no_boot) runs first
+				after_kill_callback = [this, before = std::move(after_kill_callback)]()
 				{
+					if (before)
+					{
+						before();
+					}
 					sys_log.notice("Big Picture Mode: game stopped, returning to Big Picture Mode.");
 					const bool result = BootBigPictureMode();
 					sys_log.notice("Big Picture Mode: BootBigPictureMode() returned %d", result);

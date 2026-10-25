@@ -67,6 +67,8 @@ namespace rsx::overlays
 				return fmt::format("%s is encrypted and needs its disc key: put the key file made with the dump, named %s.dkey, beside it in the games folder.", name, name.substr(0, name.find_last_of('.')));
 			case game_boot_result::disc_key_invalid:
 				return fmt::format("The key file beside %s (.dkey or .key) is not this disc's. Put the right one there.", name);
+			case game_boot_result::firmware_missing:
+				return "The PS3 system software isn't installed, and games need it. Put Sony's PS3UPDAT.PUP (the PS3 update from PlayStation's site) in /data/homebrew/PPSA99200/ and start Kong³ again: it installs once.";
 			default:
 				return fmt::format("%s (%s).", result, name);
 			}
@@ -138,9 +140,14 @@ namespace rsx::overlays
 				{
 					launcher_log.error("Booting '%s' failed: %s", path, result);
 					ps5_launcher_message("Couldn't start the game", boot_failure_text(path, result));
-					g_big_picture_mode_active = false;
-					// Back to the launcher rather than an empty screen
-					Emu.BootBigPictureMode();
+					// Back to the launcher rather than an empty screen. A game that
+					// failed after loading (no system software) is still stopping:
+					// its Kill took the flag and boots the launcher when it is done
+					if (Emu.IsStopped(true))
+					{
+						g_big_picture_mode_active = false;
+						Emu.BootBigPictureMode();
+					}
 				}
 			});
 		}
