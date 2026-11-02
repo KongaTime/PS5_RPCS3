@@ -1126,10 +1126,16 @@ int run(const char* boot_path)
 	// What RPCS3 writes from here on is open to FTP (files 0666, folders 0777),
 	// and what earlier runs wrote is opened now
 	::umask(0);
-	usz seen = 0, refused = 0;
 	// The folder itself too: FTP could not add a folder to it (fs_move_failed)
-	const usz opened = (::chmod("/app0/rpcs3", 0777) == 0) + open_to_ftp("/app0/rpcs3", seen, refused);
-	trace("frontend: /app0/rpcs3: %u files and folders, %u opened to FTP, %u refused (%s)", seen, opened, refused, refused ? fmt::format("errno %d", errno) : std::string("none"));
+	::chmod("/app0/rpcs3", 0777);
+	// On a worker: with games unpacked in it the walk took 31 s of a 35 s start
+	// (47274 entries, on my console), all of it on a black screen before the boot
+	std::thread([]
+	{
+		usz seen = 0, refused = 0;
+		const usz opened = open_to_ftp("/app0/rpcs3", seen, refused);
+		trace("frontend: /app0/rpcs3: %u files and folders, %u opened to FTP, %u refused (%s)", seen, opened, refused, refused ? fmt::format("errno %d", errno) : std::string("none"));
+	}).detach();
 	trace("frontend: %u of %u overlay images written to /app0/rpcs3/Icons/ui/", install_embedded_files("/app0/rpcs3/Icons/ui/"), ps5_embedded_file_count);
 
 	// RPCS3's patch files go here over FTP (the launcher's Patches page), and
