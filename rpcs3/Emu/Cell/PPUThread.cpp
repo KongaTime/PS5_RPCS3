@@ -75,6 +75,11 @@
 
 extern atomic_t<u64> g_watchdog_hold_ctr;
 
+#ifdef __PROSPERO__
+s32 ps5_cpu_take_ppu_core(); // rpcs3/ps5/ps5_cpus.cpp
+s32 ps5_current_cpu();
+#endif
+
 // Should be of the same type
 using spu_rdata_t = decltype(ppu_thread::rdata);
 
@@ -2488,6 +2493,19 @@ extern thread_local std::string(*g_tls_log_prefix)();
 void ppu_thread::cpu_task()
 {
 	std::fesetround(FE_TONEAREST);
+
+#ifdef __PROSPERO__
+	// PS5: with "Own core for the main thread", the game's first PPU thread
+	// runs alone on one CPU of a core the rest keep off (rpcs3/ps5/ps5_cpus.h)
+	if (id == id_base)
+	{
+		if (const s32 cpu = ps5_cpu_take_ppu_core(); cpu >= 0)
+		{
+			thread_ctrl::set_thread_affinity_mask(1ull << cpu);
+			ppu_log.success("The main thread runs alone on CPU %d (now on %d); the other threads keep off its core", cpu, ps5_current_cpu());
+		}
+	}
+#endif
 
 	if (g_cfg.core.set_daz_and_ftz)
 	{

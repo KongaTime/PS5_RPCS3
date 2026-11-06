@@ -30,6 +30,11 @@ u64 ps5_cpu_kept_mask();
 // once for each emulation, -1 when the setting is off or the core is taken
 s32 ps5_cpu_take_own_core(std::string_view thread);
 
+// With the CPU tab's "Own core for the main thread" on: the CPU the game's
+// main PPU thread is to run alone on (the core before the busy SPU's when
+// both are on), once for each emulation; -1 when off or taken
+s32 ps5_cpu_take_ppu_core();
+
 // With /app0/rpcs3-spu-spread.txt there: the CPU the calling SPU thread is to
 // stay on, one CPU a thread, a core each first (the CPUs 0 and 1 left to the
 // PPU, the RSX and the rest), the CPU given back when the thread ends; once

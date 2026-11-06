@@ -33,6 +33,7 @@ namespace
 	shared_mutex g_own_core_mutex;
 	std::string g_own_core_thread;  // the SPU on the kept core, and its CPU
 	s32 g_own_core_cpu = -1;
+	atomic_t<u64> g_ppu_core_run = 0; // the emulation whose main PPU thread took its core
 
 	bool pin_self(s32 cpu)
 	{
@@ -345,14 +346,16 @@ namespace
 {
 	// The kept core: the last pair of siblings among the title's CPUs; with
 	// none found, the last CPU alone, so the SPU at least stays on one
-	std::pair<s32, s32> kept_core()
+	// The `skip`+1-th pair from the last: the busy SPU's core is the last, the
+	// main PPU thread's the one before it when both are on
+	std::pair<s32, s32> kept_core(s32 skip = 0)
 	{
 		const u64 cpus = g_cpus.load();
 		for (s32 cpu = 63; cpu >= 0; cpu--)
 		{
-			if ((cpus >> cpu & 1) && g_sibling[cpu] >= 0)
+			if ((cpus >> cpu & 1) && g_sibling[cpu] >= 0 && g_sibling[cpu] < cpu && skip-- == 0)
 			{
-				return {std::min<s32>(cpu, g_sibling[cpu]), std::max<s32>(cpu, g_sibling[cpu])};
+				return {g_sibling[cpu], cpu};
 			}
 		}
 		if (cpus)
@@ -364,19 +367,37 @@ namespace
 	}
 }
 
+namespace
+{
+	std::pair<s32, s32> ppu_core()
+	{
+		return kept_core(g_cfg.core.spu_own_core ? 1 : 0);
+	}
+}
+
 u64 ps5_cpu_kept_mask()
 {
-	if (!g_cfg.core.spu_own_core || !g_cpus.load())
+	if (!g_cpus.load())
 	{
 		return 0;
 	}
-	const auto [first, second] = kept_core();
-	return first < 0 ? 0 : (1ull << first | 1ull << second);
+	u64 mask = 0;
+	if (g_cfg.core.spu_own_core)
+	{
+		const auto [first, second] = kept_core();
+		mask |= first < 0 ? 0 : (1ull << first | 1ull << second);
+	}
+	if (g_cfg.core.ppu_own_core)
+	{
+		const auto [first, second] = ppu_core();
+		mask |= first < 0 ? 0 : (1ull << first | 1ull << second);
+	}
+	return mask;
 }
 
 s32 ps5_cpu_take_own_core(std::string_view thread)
 {
-	if (!ps5_cpu_kept_mask())
+	if (!g_cfg.core.spu_own_core || !ps5_cpu_kept_mask())
 	{
 		return -1;
 	}
@@ -390,6 +411,20 @@ s32 ps5_cpu_take_own_core(std::string_view thread)
 	g_own_core_thread = thread;
 	g_own_core_cpu = cpu;
 	return cpu;
+}
+
+s32 ps5_cpu_take_ppu_core()
+{
+	if (!g_cfg.core.ppu_own_core || !g_cpus.load())
+	{
+		return -1;
+	}
+	const u64 run = static_cast<u64>(Emu.GetEmulationIdentifier());
+	if (g_ppu_core_run.exchange(run) == run)
+	{
+		return -1;
+	}
+	return ppu_core().first;
 }
 
 std::string ps5_cpu_own_core_state();
@@ -483,7 +518,13 @@ std::string ps5_cpu_own_core_text()
 			fmt::append(spread, "%s%d%s", spread.empty() ? "; SPUs spread on CPUs " : " ", cpu, count > 1 ? fmt::format("x%d", count) : "");
 		}
 	}
-	return ps5_cpu_own_core_state() + spread;
+	std::string ppu;
+	if (g_cfg.core.ppu_own_core && g_cpus.load())
+	{
+		const auto [first, second] = ppu_core();
+		ppu = fmt::format("; main thread's own core: CPU %d, %d kept free%s", first, second, g_ppu_core_run == static_cast<u64>(Emu.GetEmulationIdentifier()) ? "" : ", not taken yet");
+	}
+	return ps5_cpu_own_core_state() + ppu + spread;
 }
 
 std::string ps5_cpu_own_core_state()

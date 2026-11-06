@@ -142,6 +142,7 @@ namespace rsx::overlays::ps5ui
 
 	inline constexpr settings_tab c_settings_tabs[]
 	{
+		{"Quick", "home/32/sliders-solid.png", "The settings that matter most. Each is in its own tab too."},
 		{"CPU", "home/32/gauge-solid.png", "How the PS3's processors are run."},
 		{"GPU", "home/32/display-solid.png", "How games are drawn."},
 		{"Audio", "home/32/headphones-solid.png", "How games sound."},
@@ -203,6 +204,20 @@ namespace rsx::overlays::ps5ui
 	// for each tab, if `headings`): the global config's value and what the
 	// game gets, the global config with its custom config over it
 	std::vector<setting_row> read_game_settings(const std::string& serial, bool headings);
+
+	// Whether the game takes RPCS3's database's settings (Recommended
+	// settings: the global config's, or its custom config's), and that entry,
+	// or nothing
+	bool recommended_for(const std::string& serial);
+	std::string recommended_config_for(const std::string& serial);
+
+	// What a game gets without settings of its own: the global config, and
+	// its database entry when `recommended`
+	std::unique_ptr<cfg_root> load_game_base(const std::string& serial, bool recommended);
+
+	// After a page changed rows[changed]: the same setting's other rows take
+	// its value, and Recommended settings moves what the rows fall back to
+	void game_setting_changed(const std::string& serial, std::vector<setting_row>& rows, usz changed);
 
 	// The game's custom config (config/custom_configs/config_<serial>.yml):
 	// what differs from the global config, among these settings and any the

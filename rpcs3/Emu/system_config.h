@@ -36,6 +36,7 @@ struct cfg_root : cfg::node
 		cfg::_bool spu_loop_detection{ this, "SPU loop detection", false }; // Try to detect wait loops and trigger thread yield
 		cfg::_int<1, 6> max_spurs_threads{ this, "Max SPURS Threads", 6, true }; // HACK. If less then 6, max number of running SPURS threads in each thread group.
 		cfg::_bool spu_own_core{ this, "SPU Own Core", false }; // PS5: a one-SPU SPURS kernel alone on a core (rpcs3/ps5/ps5_cpus.h)
+		cfg::_bool ppu_own_core{ this, "PPU Own Core", false }; // PS5: the game's main PPU thread alone on a core (rpcs3/ps5/ps5_cpus.h)
 		cfg::uint<0, 2> spu_collision_accuracy{ this, "SPU Collision Accuracy", 1 }; // PS5: GTA IV's collision programs: 0 accurate xfloat, 1 accurate where learnt, 2 the configured accuracy (SPULLVMRecompiler.cpp)
 		cfg::_enum<spu_block_size_type> spu_block_size{ this, "SPU Block Size", spu_block_size_type::safe };
 		cfg::_bool spu_accurate_dma{ this, "Accurate SPU DMA", false };
@@ -390,6 +391,7 @@ struct cfg_root : cfg::node
 		cfg::_bool start_big_picture_mode{ this, "Start Big Picture Mode on boot", false, true };
 		cfg::_bool prevent_display_sleep{ this, "Prevent display sleep while running games", true, true };
 		cfg::_bool show_trophy_popups{ this, "Show trophy popups", true, true };
+		cfg::_bool recommended_settings{ this, "Recommended Settings", true }; // PS5: RPCS3's database of each game's settings under the game's own (rpcs3/ps5/ps5_config_database.h)
 		cfg::_bool show_rpcn_popups{ this, "Show RPCN popups", true, true };
 		cfg::_bool show_shader_compilation_hint{ this, "Show shader compilation hint", false, true };
 		cfg::_bool show_ppu_compilation_hint{ this, "Show PPU compilation hint", true, true };

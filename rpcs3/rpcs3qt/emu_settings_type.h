@@ -123,6 +123,8 @@ enum class emu_settings_type
 	LateAudioWait, // PS5: cellAudio's wait for a late game's sound
 	MenuSoundVolume, // PS5: the menus' sounds
 	SPUOwnCore, // PS5: a one-SPU SPURS kernel alone on a core
+	PPUOwnCore, // PS5: the game's main PPU thread alone on a core
+	RecommendedSettings, // PS5: RPCS3's database of each game's settings
 	SPUCollisionAccuracy, // PS5: GTA IV's collision programs accurate, accurate where learnt, or fast
 	ForceHwMSAAResolve,
 	DisableAsyncHostMM,

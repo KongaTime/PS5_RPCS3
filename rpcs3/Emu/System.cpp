@@ -1802,6 +1802,21 @@ game_boot_result Emulator::Load(const std::string& title_id, bool is_disc_patch,
 				m_add_database_config = false;
 			}
 
+#ifdef __PROSPERO__
+			// PS5: the database's recommendation lies under the game's own
+			// settings, rather than in their place when it has some
+			// (rpcs3/ps5/ps5_config_database.h)
+			if (m_config_mode == cfg_mode::custom && m_add_database_config && m_db_config && !m_db_config->empty())
+			{
+				sys_log.notice("Applying database config, under the custom config");
+				if (!g_cfg.from_string(*m_db_config))
+				{
+					sys_log.error("Failed to apply database config");
+				}
+				m_add_database_config = false;
+			}
+#endif
+
 			if (m_config_mode == cfg_mode::custom_selection || (m_config_mode == cfg_mode::continuous && !m_config_path.empty()))
 			{
 				if (fs::file cfg_file{ m_config_path })

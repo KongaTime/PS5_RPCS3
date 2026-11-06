@@ -2,6 +2,7 @@
 
 #include "stdafx.h"
 #include "ps5_ui.h"
+#include "ps5_config_database.h"
 
 #include "Emu/system_config.h"
 #include "Emu/system_utils.hpp"
@@ -466,29 +467,58 @@ namespace rsx::overlays::ps5ui
 		};
 	}
 
+	namespace
+	{
+		// The Quick tab: the settings that matter most, first; each is in its
+		// own tab too, with its label and help there
+		constexpr emu_settings_type c_quick_settings[]
+		{
+			emu_settings_type::RecommendedSettings,
+			emu_settings_type::ResolutionScale,
+			emu_settings_type::OutputScalingMode,
+			emu_settings_type::AnisotropicFilterOverride,
+			emu_settings_type::FrameLimit,
+			emu_settings_type::FrameGeneration,
+			emu_settings_type::ShaderMode,
+			emu_settings_type::WriteColorBuffers,
+			emu_settings_type::SPUBlockSize,
+			emu_settings_type::SPUOwnCore,
+			emu_settings_type::PPUOwnCore,
+		};
+	}
+
 	std::span<const settings_entry> settings_table()
 	{
-#if PS5_GPL3_FRAME_GENERATION
-		return c_settings_table;
-#else
-		// A build without Lossless Scaling's and MihawkGen's frame generation (the
-		// one that can be shared, VKFrameGenNone.cpp): not their settings, nor
-		// the choice between them and the built-in one
 		static const std::vector<settings_entry> table = []
 		{
 			std::vector<settings_entry> kept;
 			for (const settings_entry& entry : c_settings_table)
 			{
-				if (entry.type != emu_settings_type::FrameGenerationMethod && entry.type != emu_settings_type::FrameGenerationFlowScale &&
-					entry.type != emu_settings_type::FrameGenerationRepair && entry.type != emu_settings_type::FrameGenerationMihawkAssist)
+#if !PS5_GPL3_FRAME_GENERATION
+				// A build without Lossless Scaling's and MihawkGen's frame generation (the
+				// one that can be shared, VKFrameGenNone.cpp): not their settings, nor
+				// the choice between them and the built-in one
+				if (entry.type == emu_settings_type::FrameGenerationMethod || entry.type == emu_settings_type::FrameGenerationFlowScale ||
+					entry.type == emu_settings_type::FrameGenerationRepair || entry.type == emu_settings_type::FrameGenerationMihawkAssist)
 				{
-					kept.push_back(entry);
+					continue;
+				}
+#endif
+				kept.push_back(entry);
+			}
+			std::vector<settings_entry> quick;
+			for (const emu_settings_type type : c_quick_settings)
+			{
+				if (const auto it = std::find_if(kept.begin(), kept.end(), [&](const settings_entry& entry) { return entry.type == type; }); it != kept.end())
+				{
+					quick.push_back(*it);
+					quick.back().tab = "Quick";
 				}
 			}
+			kept.insert(kept.begin(), quick.begin(), quick.end());
 			return kept;
 		}();
 		return table;
-#endif
 	}
 
 	// An entry's section in the config ("Video/Performance Overlay") and name
@@ -758,15 +788,75 @@ namespace rsx::overlays::ps5ui
 		return options.empty() ? value : options.front();
 	}
 
-	std::vector<setting_row> read_game_settings(const std::string& serial, bool headings)
+	namespace
 	{
-		// What the game gets today: the global config, then its custom config
-		const auto global = load_global_config();
+		bool is_recommended_row(const setting_row& row)
+		{
+			return !row.heading && row.section == "Miscellaneous" && row.key == "Recommended Settings";
+		}
+
+		// The game's database entry as a page names it: "Write Color Buffers On, ..."
+		std::string recommended_text(const std::string& serial)
+		{
+			std::string text;
+			const std::string_view entry = ps5_config_database_entry(serial);
+			usz at = 0;
+			while (at < entry.size())
+			{
+				const usz end = std::min(entry.find('\n', at), entry.size());
+				const std::string_view line = entry.substr(at, end - at);
+				at = end + 1;
+				const usz colon = line.find(": ");
+				if (colon == umax || line.find_first_not_of(' ') == colon)
+				{
+					continue;
+				}
+				const std::string key(line.substr(line.find_first_not_of(' '), colon - line.find_first_not_of(' ')));
+				const std::string value(line.substr(colon + 2));
+				fmt::append(text, "%s%s %s", text.empty() ? "" : ", ", key, setting_text(key, value));
+			}
+			return text;
+		}
+	}
+
+	bool recommended_for(const std::string& serial)
+	{
 		const auto game = load_global_config();
 		if (fs::file file{rpcs3::utils::get_custom_config_path(serial)})
 		{
 			game->from_string(file.to_string());
 		}
+		return game->misc.recommended_settings.get();
+	}
+
+	std::string recommended_config_for(const std::string& serial)
+	{
+		return recommended_for(serial) ? std::string(ps5_config_database_entry(serial)) : std::string();
+	}
+
+	std::unique_ptr<cfg_root> load_game_base(const std::string& serial, bool recommended)
+	{
+		auto base = load_global_config();
+		if (const std::string_view entry = ps5_config_database_entry(serial); recommended && !entry.empty())
+		{
+			base->from_string(std::string(entry));
+		}
+		return base;
+	}
+
+	std::vector<setting_row> read_game_settings(const std::string& serial, bool headings)
+	{
+		// What the game gets today: the global config, the database's
+		// recommendation for it (unless the game says not to), then its custom
+		// config. A row's global value is the first two: what the game gets
+		// without settings of its own
+		const auto global = load_game_base(serial, recommended_for(serial));
+		const auto game = load_game_base(serial, recommended_for(serial));
+		if (fs::file file{rpcs3::utils::get_custom_config_path(serial)})
+		{
+			game->from_string(file.to_string());
+		}
+		const std::string recommended = recommended_text(serial);
 
 		std::vector<setting_row> rows;
 		std::string_view tab;
@@ -795,6 +885,10 @@ namespace rsx::overlays::ps5ui
 			row.key = key;
 			row.label = *entry.label ? entry.label : key;
 			row.help = entry.help;
+			if (is_recommended_row(row))
+			{
+				row.help += recommended.empty() ? "\n\nRPCS3's database has no settings for this game." : "\n\nFor this game: " + recommended + ".";
+			}
 			row.global = global_setting->to_string();
 			row.value = game_setting->to_string();
 			row.options = setting_options(*global_setting, key);
@@ -810,10 +904,59 @@ namespace rsx::overlays::ps5ui
 		return rows;
 	}
 
+	void game_setting_changed(const std::string& serial, std::vector<setting_row>& rows, usz changed)
+	{
+		// The same setting elsewhere on the page (the Quick tab's rows are
+		// the other tabs' too)
+		for (setting_row& row : rows)
+		{
+			if (!row.heading && &row != &rows[changed] && row.section == rows[changed].section && row.key == rows[changed].key)
+			{
+				row.value = rows[changed].value;
+			}
+		}
+		if (!is_recommended_row(rows[changed]))
+		{
+			return;
+		}
+		// Recommended settings on or off: what the game gets without settings
+		// of its own changes, and the settings it had none of follow
+		const auto base = load_game_base(serial, rows[changed].value == "true");
+		for (setting_row& row : rows)
+		{
+			if (row.heading || is_recommended_row(row))
+			{
+				continue;
+			}
+			if (cfg::_base* setting = find_setting(*base, row.section, row.key))
+			{
+				const std::string global = setting->to_string();
+				if (row.value == row.global)
+				{
+					row.value = global;
+				}
+				row.global = global;
+				if (std::find(row.options.begin(), row.options.end(), global) == row.options.end())
+				{
+					row.options.insert(row.options.begin(), global);
+				}
+			}
+		}
+	}
+
 	void write_game_settings(const std::string& serial, const std::vector<setting_row>& rows)
 	{
-		const auto global = load_global_config();
-		const auto game = load_global_config();
+		// Recommended settings as the page has it, else as the game has it
+		bool recommended = recommended_for(serial);
+		for (const setting_row& row : rows)
+		{
+			if (is_recommended_row(row))
+			{
+				recommended = row.value == "true";
+			}
+		}
+		const auto global = load_game_base(serial, recommended);
+		const auto game = load_game_base(serial, recommended);
 		const std::string path = rpcs3::utils::get_custom_config_path(serial);
 		if (fs::file file{path})
 		{

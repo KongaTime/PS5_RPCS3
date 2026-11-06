@@ -353,13 +353,19 @@ namespace rsx::overlays
 			m_tabs.push_back(std::move(controls));
 		}
 
+		// Not the Quick tab's rows: the Game tab has this menu's own
+		bool quick = false;
 		for (usz i = 0; i < m_settings.size(); i++)
 		{
 			if (m_settings[i].heading)
 			{
-				m_tabs.push_back({m_settings[i].label, {}});
+				quick = m_settings[i].label == "Quick";
+				if (!quick)
+				{
+					m_tabs.push_back({m_settings[i].label, {}});
+				}
 			}
-			else if (m_tabs.size() > 1)
+			else if (m_tabs.size() > 1 && !quick)
 			{
 				m_tabs.back().rows.push_back({action::none, static_cast<s32>(i), m_settings[i].label, "", nullptr, false});
 			}
@@ -466,6 +472,7 @@ namespace rsx::overlays
 			return;
 		}
 		setting.value = setting.options[(at + (direction < 0 ? count - 1 : 1)) % count];
+		game_setting_changed(m_serial, m_settings, current.setting);
 		m_changed = true;
 		apply_live(setting);
 		play_sound(sound_effect::cursor);
@@ -633,6 +640,7 @@ namespace rsx::overlays
 				if (setting.value != setting.global)
 				{
 					setting.value = setting.global;
+					game_setting_changed(m_serial, m_settings, current.setting);
 					m_changed = true;
 					apply_live(setting);
 					play_sound(sound_effect::cancel);

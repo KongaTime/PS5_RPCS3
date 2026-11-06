@@ -17,6 +17,7 @@
 std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "ps5_gs_frame.h"
 #include "ps5_pad_handler.h"
+#include "ps5_ui.h"
 #include "ps5_firmware.h"
 #include "ps5_embedded_files.h"
 #include "ps5_audio_backend.h"
@@ -1041,7 +1042,14 @@ namespace
 		g_emu_callbacks.check_microphone_permissions = []() {};
 		g_emu_callbacks.make_video_source = []() -> std::unique_ptr<video_source> { return std::make_unique<ps5_still_video_source>(); };
 		g_emu_callbacks.enable_gamemode = [](bool) {};
-		g_emu_callbacks.get_database_config = [](const std::string&) -> std::string { return {}; };
+		// RPCS3's database of recommended settings, built in (ps5_config_database.h),
+		// unless the game's settings or the global ones turn it off
+		g_emu_callbacks.get_database_config = [](const std::string& title_id) -> std::string
+		{
+			std::string config = title_id.empty() ? std::string() : rsx::overlays::ps5ui::recommended_config_for(title_id);
+			trace("config: recommended settings for %s: %s", title_id, config.empty() ? std::string("none") : fmt::replace_all(config, "\n", " "));
+			return config;
+		};
 	}
 }
 

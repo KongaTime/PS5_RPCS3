@@ -1775,12 +1775,14 @@ namespace rsx::overlays
 			const s32 at = static_cast<s32>(it - row.options.begin());
 			const s32 count = static_cast<s32>(row.options.size());
 			row.value = row.options[(at + (left ? count - 1 : 1)) % count];
+			game_setting_changed(m_gs_serial, m_gs_rows, m_gs_selected);
 			play_sound(sound_effect::cursor);
 			layout_game_settings();
 		}
 		else if (button_press == pad_button::square && row.value != row.global)
 		{
 			row.value = row.global;
+			game_setting_changed(m_gs_serial, m_gs_rows, m_gs_selected);
 			play_sound(sound_effect::cancel);
 			layout_game_settings();
 		}

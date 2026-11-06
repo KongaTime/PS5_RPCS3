@@ -125,6 +125,8 @@ const std::map<emu_settings_type, cfg_location> settings_location =
 	{ emu_settings_type::LateAudioWait,              get_cfg_location(local_cfg.audio.late_audio_wait) }, // PS5
 	{ emu_settings_type::MenuSoundVolume,            get_cfg_location(local_cfg.audio.menu_sound_volume) }, // PS5
 	{ emu_settings_type::SPUOwnCore,                 get_cfg_location(local_cfg.core.spu_own_core) }, // PS5
+	{ emu_settings_type::PPUOwnCore,                 get_cfg_location(local_cfg.core.ppu_own_core) }, // PS5
+	{ emu_settings_type::RecommendedSettings,        get_cfg_location(local_cfg.misc.recommended_settings) }, // PS5
 	{ emu_settings_type::SPUCollisionAccuracy,       get_cfg_location(local_cfg.core.spu_collision_accuracy) }, // PS5
 	{ emu_settings_type::ForceHwMSAAResolve,         get_cfg_location(local_cfg.video.force_hw_MSAA_resolve) },
 	{ emu_settings_type::DisableAsyncHostMM,         get_cfg_location(local_cfg.video.disable_async_host_memory_manager) },

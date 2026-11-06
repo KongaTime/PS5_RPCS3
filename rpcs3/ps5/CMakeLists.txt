@@ -25,6 +25,7 @@ add_library(rpcs3_ps5 STATIC
     ps5_patches.cpp
     ps5_packages.cpp
     ps5_cpus.cpp
+    ps5_config_database.cpp
     ps5_memory_cache.cpp
     ps5_fdtrack.cpp
     ps5_sound.cpp
