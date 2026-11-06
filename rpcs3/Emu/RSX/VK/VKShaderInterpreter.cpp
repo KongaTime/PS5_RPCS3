@@ -11,6 +11,7 @@
 #include "Emu/RSX/Program/ShaderInterpreter.h"
 #include "Emu/RSX/rsx_methods.h"
 #include "Emu/localized_string.h"
+#include "Utilities/Thread.h"
 
 #include <thread>
 #include <unordered_set>
