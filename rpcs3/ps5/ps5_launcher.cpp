@@ -1293,7 +1293,7 @@ namespace rsx::overlays
 
 		if (!m_loading)
 		{
-			style_label(m_placeholder, "No games found. Put each game's folder in /data/homebrew/PPSA99200/rpcs3/games/", 13, f_regular, c_text_dim);
+			style_label(m_placeholder, "No games found. Put each game's folder in /data/homebrew/PPSA99200/rpcs3/games/, or in rpcs3/games/ on a USB drive", 13, f_regular, c_text_dim);
 			place(m_placeholder, c_margin, c_row_y + 40);
 		}
 

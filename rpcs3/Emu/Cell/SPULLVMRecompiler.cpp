@@ -9,6 +9,7 @@
 #include "Emu/Memory/vm_reservation.h"
 #include "Emu/RSX/Core/RSXReservationLock.hpp"
 #include "Crypto/sha1.h"
+#include "spu_code_version.h"
 
 #include <cctype>
 #include <cstdlib>
@@ -48,6 +49,7 @@ const extern spu_decoder<spu_iflag> g_spu_iflag;
 #pragma GCC diagnostic ignored "-Wstrict-aliasing"
 #endif
 #include <llvm/ADT/PostOrderIterator.h>
+#include <llvm/Config/llvm-config.h>
 #include <llvm/Analysis/PostDominators.h>
 #include <llvm/IR/InlineAsm.h>
 #include <llvm/IR/Verifier.h>
@@ -539,10 +541,11 @@ std::string spu_collision_status()
 // which compresses it (zstd) and appends a second's worth at a time.
 //
 // The file is named for what the code depends on besides the program: the
-// core settings, when this recompiler was built (this file is compiled again
-// whenever it or anything it includes changes: the spu_thread layout, LLVM),
-// the TSC's frequency (in the decrementer's code) and the CPU it targets;
-// others are removed. Code holding per-boot addresses is not kept: the
+// core settings, the recompiler's fingerprint (its sources and the
+// spu_thread layout's, spu_code_version.py) and LLVM's version, the TSC's
+// frequency (in the decrementer's code) and the CPU it targets. The three
+// newest others are kept (another setting's, such as SPU Block Size Safe
+// beside Mega), older ones removed. Code holding per-boot addresses is not kept: the
 // learning watch's functions, and none other (the decrementer reads the
 // timebase offset through a call)
 namespace
@@ -550,7 +553,8 @@ namespace
 	constexpr char c_pack_magic[8] = {'P', 'S', '5', 'S', 'P', 'U', 'C', '2'};
 	constexpr u32 c_record_magic = 0x4f555053; // "SPUO"
 	constexpr usz c_record_head = 16; // magic, name size, stored size, object size; then the name and the object, compressed
-	constexpr const char* c_recompiler_built = __DATE__ " " __TIME__;
+	constexpr const char* c_recompiler_built = PS5_SPU_CODE_VERSION;
+	constexpr usz c_packs_kept = 3; // besides this boot's
 
 	struct spu_code_queued
 	{
@@ -752,7 +756,7 @@ namespace
 		}
 
 		std::string key = g_cfg.core.to_string();
-		fmt::append(key, "|recompiler %s|tsc %u|cpu %s", c_recompiler_built, utils::get_tsc_freq(), jit_compiler::cpu(g_cfg.core.llvm_cpu.to_string()));
+		fmt::append(key, "|recompiler %s|llvm %s|tsc %u|cpu %s", c_recompiler_built, LLVM_VERSION_STRING, utils::get_tsc_freq(), jit_compiler::cpu(g_cfg.core.llvm_cpu.to_string()));
 
 		// And the one setting outside Core the code depends on: SPU Compatible
 		// Savestates Mode stores the registers and checks for a pause where the
@@ -764,15 +768,29 @@ namespace
 		const std::string name = fmt::format("spu-code-%s.pack", fmt::base57(reinterpret_cast<const uchar*>(sha), 8));
 		const std::string path = cache_path + name;
 
-		// Others: for other settings or builds, whose code would never load
-		// again, and build 131's folders of a file a function
+		// Others: for other settings or recompilers. The newest few stay (Safe's
+		// beside Mega's: switching back loads instead of compiling again), the
+		// rest go, and build 131's folders of a file a function
 		std::vector<std::string> stale;
+		std::vector<std::pair<s64, std::string>> others;
 		for (const auto& entry : fs::dir(cache_path))
 		{
 			if (entry.name.starts_with("spu-code-") && entry.name != name)
 			{
-				stale.push_back(cache_path + entry.name);
+				if (entry.is_directory)
+				{
+					stale.push_back(cache_path + entry.name);
+				}
+				else
+				{
+					others.emplace_back(entry.mtime, cache_path + entry.name);
+				}
 			}
+		}
+		std::sort(others.begin(), others.end(), std::greater<>());
+		for (usz i = c_packs_kept; i < others.size(); i++)
+		{
+			stale.push_back(others[i].second);
 		}
 		if (!stale.empty())
 		{

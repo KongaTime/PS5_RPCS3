@@ -1009,6 +1009,31 @@ bool Emulator::BootBigPictureMode()
 	// Make sure the games folder is parsed before we enter big picture mode.
 	AddGamesFromDir(rpcs3::utils::get_games_dir());
 
+#ifdef __PROSPERO__
+	// PS5: and the games on USB drives and extended storage, in the same
+	// rpcs3/games/ folder as the title's, or the folders PS3 backup tools use
+	// (GAMES/, PS3ISO/). A drive taken out leaves its games registered, and the
+	// launcher skips them (no PARAM.SFO) until it is back
+	for (const char* drive : {"usb0", "usb1", "usb2", "usb3", "usb4", "usb5", "usb6", "usb7", "ext0", "ext1"})
+	{
+		const std::string root = fmt::format("/mnt/%s/", drive);
+		if (!fs::is_dir(root))
+		{
+			continue;
+		}
+		std::string found;
+		for (const char* folder : {"rpcs3/games", "GAMES", "PS3ISO"})
+		{
+			if (fs::is_dir(root + folder))
+			{
+				const u32 added = AddGamesFromDir(root + folder);
+				fmt::append(found, " %s%s (%u new)", root, folder, added);
+			}
+		}
+		sys_log.success("Big Picture Mode: drive %s:%s", root, found.empty() ? std::string(" no rpcs3/games, GAMES or PS3ISO folder") : found);
+	}
+#endif
+
 	g_cfg.video.disable_on_disk_shader_cache.set(true);
 
 	vm::init();

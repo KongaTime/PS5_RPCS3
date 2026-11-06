@@ -154,6 +154,32 @@ target_include_directories(rpcs3_emu
         ${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty
 )
 
+# PS5: the SPU recompiler's fingerprint, which names the SPU code cache: the
+# files whose change makes kept code wrong (rpcs3/ps5/spu_code_version.py)
+set(ps5_spu_code_files
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPULLVMRecompiler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPUCommonRecompiler.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPURecompiler.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPUThread.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPUAnalyser.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Cell/SPUInterpreter.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CPU/CPUThread.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CPU/CPUTranslator.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/CPU/CPUTranslator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/Memory/vm_reservation.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../util/v128.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../util/simd.hpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Utilities/JIT.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Utilities/JITLLVM.cpp
+)
+add_custom_command(OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/spu_code_version.h
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/../ps5/spu_code_version.py ${CMAKE_CURRENT_BINARY_DIR}/spu_code_version.h ${ps5_spu_code_files}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../ps5/spu_code_version.py ${ps5_spu_code_files}
+    VERBATIM)
+target_sources(rpcs3_emu PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/spu_code_version.h)
+set_source_files_properties(Cell/SPULLVMRecompiler.cpp PROPERTIES OBJECT_DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/spu_code_version.h)
+target_include_directories(rpcs3_emu PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
 # Utilities
 target_sources(rpcs3_emu PRIVATE
     ../util/atomic.cpp
